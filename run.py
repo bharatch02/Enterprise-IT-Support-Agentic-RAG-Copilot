@@ -1,5 +1,13 @@
-from app.core.config import get_settings
+from pathlib import Path
+from app.services.ingestion import load_file, chunk_documents
+from app.rag.vectorstore import add_documents
 
-settings = get_settings()
+docs = load_file(Path("data/sample_kb/company_it_handbook.md"))
+chunks = chunk_documents(docs)
 
-print(f"App Name: {settings.app_name}")
+print(f"Documents loaded: {len(docs)}")
+print(f"Chunks created: {len(chunks)}")
+
+add_documents(chunks)
+
+print("Documents added to Pinecone successfully!")
