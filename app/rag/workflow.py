@@ -32,13 +32,15 @@ SAFE_FALLBACK = (
 # 1. Model and search tool initialization
 # --------------------------------------------------
 
+
 def llm():
     """Create the local Ollama model once and reuse it."""
     global _llm
 
     if _llm is None:
         _llm = ChatOllama(
-            model="qwen3:8b",
+            model=settings.ollama_model,
+            base_url=settings.ollama_base_url,
             temperature=0,
             num_ctx=4096,
             num_predict=256,
@@ -46,6 +48,7 @@ def llm():
         )
 
     return _llm
+
 
 
 def web_search_tool():
