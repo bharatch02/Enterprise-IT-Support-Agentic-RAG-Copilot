@@ -1,542 +1,265 @@
 # Enterprise IT Support Agentic RAG Copilot
 
-An end-to-end **Forward Deployed Engineer (FDE) project** that turns a notebook-style Agentic RAG workflow into a deployable internal product using **LangGraph, FastAPI, Pinecone, Groq, Tavily, HTML, CSS, and JavaScript**.
+An agentic retrieval-augmented generation (RAG) support assistant for internal IT documentation.
 
----
+An end-to-end Forward Deployed Engineer (FDE) project that demonstrates how an organization can turn internal IT documentation into a conversational support assistant. The application provides a web UI, a FastAPI backend, a LangGraph workflow, private knowledge retrieval, and optional external web search.
+> **Project status:** Working development baseline. The API, local Qwen/Ollama response generation, private knowledge retrieval, direct greeting handling, and safe insufficient-evidence fallback have been manually exercised. Automated tests, full production hardening, and deployment have not yet been verified.
 
+## Table of Contents
+- Business Problem
+- Features
+- Architecture
+- Workflow
+- Technology Stack
+- Project Structure
+- Prerequisites
+- Local Setup
+- Run the Application
+- API Endpoints
+- Demo Scenarios
+- Security Notes
+- Testing
+- Known Limitations and Roadmap
 ## 1. Business Problem
+Consider NovaRetail, a fictional company whose IT team maintains documentation for VPN access, password policies, MFA, software installation, laptop troubleshooting, and service-desk procedures.
 
-### Customer
-**NovaRetail**, a fictional 3,000-employee retail company.
+Employees may struggle to find the right document, and a general-purpose chatbot can provide unsupported answers. Some questions also require information that is not available in internal documentation, such as current vendor incidents.
 
-### Problem
-The internal IT team maintains many documents: VPN instructions, password rules, MFA policy, software installation rules, laptop troubleshooting guides, and service-desk runbooks.
-
-Employees still create repetitive support tickets because:
-
-- They do not know where the correct document is.
-- Traditional keyword search returns too many results.
-- A normal chatbot may hallucinate an answer.
-- Internal documents can be incomplete or outdated.
-- Some questions require current vendor information from the public web.
-
-### Example
-An employee asks:
-
-> **“How do I connect to the company VPN from home?”**
-
-The answer exists in the private company KB, so the system should **not search the public internet**.
-
-Another employee asks:
-
-> **“What is the latest Microsoft Teams outage guidance?”**
-
-The internal KB may not contain current outage information. The system should recognize weak private evidence, use an external search, grade that evidence, and answer with an external-source warning.
-
-### Business Goal
-Build a secure IT Support Copilot that:
-
-1. Searches trusted private knowledge first.
-2. Checks whether retrieved evidence is good enough.
-3. Uses web search only when private knowledge is insufficient.
-4. Rewrites weak queries and retries.
-5. Generates grounded answers.
-6. Shows the decision path for transparency and debugging.
-7. Lets authorized staff add new company documents.
-
----
-
-## 2. Why This Is an FDE Project
-
-A Forward Deployed Engineer does more than create an LLM notebook. The FDE must turn the customer's problem into a usable product.
-
-```text
-Customer Problem
-      ↓
-Discovery & Requirements
-      ↓
-Solution Architecture
-      ↓
-Data / Knowledge Integration
-      ↓
-Agentic RAG Development
-      ↓
-API Development
-      ↓
-User Interface
-      ↓
-Security + Audit + Testing
-      ↓
-Deployment
-      ↓
-Observe + Improve
-```
-
-This repository demonstrates each layer.
-
----
-
-## 3. Simple Architecture
-
-```text
-                   ┌─────────────────────┐
-                   │   Employee / User   │
-                   └──────────┬──────────┘
-                              │
-                              ▼
-                   ┌─────────────────────┐
-                   │ HTML/CSS/JavaScript │
-                   │      Web UI         │
-                   └──────────┬──────────┘
-                              │ POST /api/chat
-                              ▼
-                   ┌─────────────────────┐
-                   │       FastAPI       │
-                   └──────────┬──────────┘
-                              │
-                              ▼
-                   ┌─────────────────────┐
-                   │     LangGraph       │
-                   │ Agentic RAG Control │
-                   └──────────┬──────────┘
-                              │
-               ┌──────────────┴──────────────┐
-               │                             │
-               ▼                             ▼
-       ┌───────────────┐              ┌──────────────┐
-       │ Private KB    │              │ Tavily Web   │
-       │ Pinecone      │              │ Search       │
-       └───────┬───────┘              └──────┬───────┘
-               │                             │
-               └──────────────┬──────────────┘
-                              ▼
-                     ┌────────────────┐
-                     │ Groq LLM       │
-                     │ Grounded Answer│
-                     └────────────────┘
-```
-
----
-
-## 4. Agentic RAG Workflow
-
-This follows the same core implementation pattern as the reference notebook.
-
-```text
+The goal is to build an IT Support Copilot that:
+1. Retrieves relevant internal documentation before answering IT questions.
+2. Generates answers grounded in retrieved knowledge when evidence is sufficient.
+3. Attempts external search when the private knowledge base cannot support an answer and Tavily is configured.
+4. Returns a safe fallback when reliable evidence is unavailable.
+5. Shows a trace of the workflow's decisions.
+6. Allows authorized users to upload supported documents for indexing.
+## 2. Current Features
+- Web interface: Chat UI with an agent trace panel and document-upload interface.
+- REST API: FastAPI endpoints for health checks, chat, and document ingestion.
+- Local language model: Qwen 3 8B served through Ollama, avoiding a required paid OpenAI API.
+- Private knowledge retrieval: Hugging Face sentence-transformers/all-MiniLM-L6-v2 embeddings and Pinecone vector search.
+- Workflow orchestration: LangGraph routes greetings directly and IT questions through private retrieval.
+- External search fallback: Tavily search is attempted when the private knowledge base does not produce an answer, provided a Tavily API key is configured.
+- Safe fallback: If useful evidence is unavailable or answer generation fails, the application returns an insufficient-evidence message instead of intentionally inventing an answer.
+- Document ingestion: Supported files are loaded, chunked, embedded, and indexed.
+- Basic audit logging: SQLite-based audit logging for chat requests.
+Features such as a complete evidence-grading loop, query rewriting/retries, comprehensive automated tests, and production deployment are not claimed as implemented in the current workflow.
+## 3. Architecture
+Employee
+   |
+   v
+HTML / CSS / JavaScript
+   |
+   | POST /api/chat
+   v
+FastAPI
+   |
+   v
+LangGraph workflow
+   |
+   +--> Direct response for recognized greetings
+   |
+   +--> Retrieve private knowledge
+   |        |
+   |        v
+   |   MiniLM embeddings + Pinecone
+   |        |
+   |        v
+   |   Local Qwen 3 via Ollama
+   |
+   +--> If private evidence is insufficient
+            |
+            v
+       Tavily web search (optional)
+            |
+            v
+       Local Qwen 3 via Ollama
+            |
+            v
+       Answer with web citations or safe fallback
+## 4. Current Agent Workflow
+The current workflow follows this decision path:
 Question
-   ↓
-[1] Route Question
-   ├── Greeting / simple chat ─────────────→ Direct Answer
-   │
-   └── IT support question
-                ↓
-[2] Retrieve from Private Pinecone KB
-                ↓
-[3] Grade Private Evidence
-       ┌────────┴────────┐
-       │                 │
-     GOOD               WEAK
-       │                 │
-       ▼                 ▼
-Generate from KB    [4] Tavily Web Search
-                         ↓
-                  [5] Grade Web Evidence
-                    ┌────┴─────┐
-                    │          │
-                  GOOD        WEAK
-                    │          │
-                    ▼          ▼
-              Generate Web  [6] Rewrite Query
-                               ↓
-                         Retry Private KB
-                               ↓
-                        Max retry reached?
-                               ↓
-                    Insufficient Evidence
-```
+   |
+   v
+Rule-based routing
+   |
+   +--> Recognized greeting --> Direct response
+   |
+   +--> IT/support question
+              |
+              v
+       Retrieve private KB
+              |
+              v
+       Generate answer from KB
+              |
+        Answer sufficient?
+          /          \
+        Yes           No
+         |             |
+         v             v
+   Return KB answer   Attempt Tavily search
+                            |
+                       Usable evidence?
+                         /       \
+                       Yes        No
+                        |          |
+                        v          v
+                 Generate answer  Safe fallback
+                 from web evidence
+The trace returned by the API helps demonstrate which path ran. The current implementation uses the model's response marker to identify insufficient evidence; it does not yet implement a separate, structured evidence-grading node or query-rewrite/retry loop.
+## 5. Technology Stack
+Layer	Technology	Purpose
+Workflow orchestration	LangGraph	Stateful workflow and conditional routing
+Local LLM	Qwen 3 8B via Ollama	Local answer generation
+Embeddings	Hugging Face sentence-transformers/all-MiniLM-L6-v2	Local 384-dimensional text embeddings
+Vector database	Pinecone	Store and retrieve document chunks
+External search	Tavily	Optional fallback search
+API	FastAPI	REST endpoints
+Frontend	HTML, CSS, JavaScript	Chat and document-upload UI
+Audit	SQLite	Basic request audit records
+Language	Python	Application and workflow implementation
 
-### Why Agentic?
-
-Normal RAG does approximately this:
-
-```text
-Question → Retrieve → Generate
-```
-
-This project makes decisions:
-
-```text
-Question
- → Route
- → Retrieve
- → Evaluate evidence
- → Choose KB or Web
- → Rewrite if needed
- → Retry
- → Generate grounded answer
-```
-
-The system therefore controls **what to do next** based on its current state.
-
----
-
-## 5. Main Technology Stack
-
-| Layer | Technology | Purpose |
-|---|---|---|
-| Agent workflow | LangGraph | Stateful routing and conditional decisions |
-| LLM | Groq | Routing, grading, rewriting, answer generation |
-| Embeddings | HuggingFace `all-MiniLM-L6-v2` | Local 384-dimensional embeddings |
-| Vector DB | Pinecone | Private enterprise knowledge base |
-| External search | Tavily | Fallback when company KB is insufficient |
-| API | FastAPI | Backend and REST endpoints |
-| Frontend | HTML/CSS/JavaScript | Employee-facing interface |
-| Audit | SQLite | Basic decision-path logging |
-| Packaging | Docker | Reproducible deployment |
-
----
 
 ## 6. Project Structure
 
-```text
-FDE_Agentic_RAG_IT_Copilot/
-│
-├── app/
-│   ├── api/
-│   │   └── routes.py              # Chat, health and ingestion APIs
-│   │
-│   ├── core/
-│   │   ├── config.py              # Environment configuration
-│   │   └── logging.py             # Logging configuration
-│   │
-│   ├── rag/
-│   │   ├── state.py               # LangGraph state + structured decisions
-│   │   ├── vectorstore.py         # Pinecone + embeddings
-│   │   └── workflow.py            # Complete Agentic RAG graph
-│   │
-│   ├── services/
-│   │   ├── audit.py               # SQLite query audit
-│   │   └── ingestion.py           # PDF/TXT/MD/DOCX loading + chunking
-│   │
-│   └── main.py                    # FastAPI application
-│
-├── data/
-│   └── sample_kb/
-│       ├── company_it_handbook.md
-│       └── service_desk_runbook.md
-│
-├── static/
-│   ├── css/style.css
-│   └── js/app.js
-│
-├── templates/
-│   └── index.html
-│
-├── tests/
-│   └── test_ingestion.py
-│
-├── uploads/
-├── .env.example
-├── Dockerfile
-├── ingest_sample_kb.py
-├── requirements.txt
-├── run.py
-└── README.md
-```
+| Path | Purpose |
+| --- | --- |
+| `app/api/` | FastAPI routes for chat, health checks, and document ingestion |
+| `app/core/` | Application configuration and logging |
+| `app/rag/` | Retrieval, vector store, workflow state, and LangGraph orchestration |
+| `app/services/` | Document ingestion and audit logging |
+| `data/sample_kb/` | Sample IT handbook and service-desk runbook |
+| `static/` | Frontend CSS and JavaScript |
+| `templates/` | HTML page template |
+| `tests/` | Retrieval and RAG test modules |
+| `uploads/` | Uploaded documents (created/used by the application) |
+| `ingest_sample_kb.py` | Indexes the sample knowledge base |
+| `run.py` | Starts the application |
+| `requirements.txt` | Python dependencies |
+| `.gitignore` | Files excluded from version control |
 
----
+The project also includes the `LICENSE` and this `README.md` at its root.
+## 7. Prerequisites
+- Windows, macOS, or Linux
+- Python 3.11 recommended
+- Conda or Python virtual environment
+- Ollama installed and running
+- Qwen model downloaded in Ollama (for example, qwen3:8b)
+- Pinecone account and API key
+- Tavily API key if external web fallback is required
+The local LLM and embeddings do not require an OpenAI API key. Pinecone and Tavily are external services and may have their own usage limits or pricing; check their current plans before relying on them.
+## 8. Local Setup
+### Step 1 — Open the project directory
+cd C:\Users\KHUSHI\NewFolder\Enterprise-IT-Support-Agentic-RAG-Copilot
+Use the actual project directory if yours is different.
+### Step 2 — Activate your Conda environment
+If you already created the project environment:
+conda activate project
+Alternatively, create a new environment with Python 3.11:
+conda create -n project python=3.11 -y
+conda activate project
+### Step 3 — Install dependencies
+python -m pip install -r requirements.txt
+### Step 4 — Configure environment variables
+Create a local .env file in the project root. Use the variable names expected by app/core/config.py. The exact settings and defaults in that file are authoritative.
 
-## 7. Setup
+Example template (replace placeholders with your own values; never commit actual secrets):
+PINECONE_API_KEY=your_pinecone_api_key
+PINECONE_INDEX_NAME=enterprise-it-support-local-new
+PINECONE_NAMESPACE=fde-it-support-rag
 
-### Step 1 — Create virtual environment
+EMBEDDING_MODEL=all-MiniLM-L6-v2
 
-```bash
-python -m venv venv
-```
+TAVILY_API_KEY=your_tavily_api_key_if_used
+ADMIN_API_KEY=replace_with_a_long_random_secret
 
-Windows:
-
-```bash
-venv\Scripts\activate
-```
-
-macOS/Linux:
-
-```bash
-source venv/bin/activate
-```
-
-### Step 2 — Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### Step 3 — Configure environment
-
-Create a `.env` file in the project root directory with the following variables:
-
-```env
-# LLM API Keys
-GROQ_API_KEY=your_groq_api_key_here
-OPENAI_API_KEY=your_openai_api_key_here
-
-# External Search
-TAVILY_API_KEY=your_tavily_api_key_here
-
-# Vector Database (Pinecone)
-PINECONE_API_KEY=your_pinecone_api_key_here
-PINECONE_INDEX_NAME=fde-it-support-rag
-PINECONE_NAMESPACE=company-it-kb
-
-# LLM Models
-GROQ_MODEL=openai/gpt-oss-20b
-OPENAI_MODEL=gpt-4o-mini
-EMBEDDING_MODEL=text-embedding-3-small
-
-# Security
-ADMIN_API_KEY=change-me-in-production
-
-# Application Settings
 APP_ENV=development
-```
-
-#### Environment Variable Reference
-
-| Variable | Description | Example | Required |
-|---|---|---|---|
-| `GROQ_API_KEY` | API key for Groq LLM (routing, grading, generation) | `gsk_...` | ✅ Yes |
-| `OPENAI_API_KEY` | API key for OpenAI (embeddings and fallback LLM) | `sk-...` | ✅ Yes |
-| `TAVILY_API_KEY` | API key for Tavily web search | `tvly-...` | ✅ Yes |
-| `PINECONE_API_KEY` | API key for Pinecone vector database | `pckey-...` | ✅ Yes |
-| `PINECONE_INDEX_NAME` | Pinecone index name | `fde-it-support-rag` | ⚠️ Optional (default: `fde-it-support-rag`) |
-| `PINECONE_NAMESPACE` | Pinecone namespace for document isolation | `company-it-kb` | ⚠️ Optional (default: `company-it-kb`) |
-| `GROQ_MODEL` | Groq model identifier | `openai/gpt-oss-20b` | ⚠️ Optional (default: `openai/gpt-oss-20b`) |
-| `OPENAI_MODEL` | OpenAI model identifier | `gpt-4o-mini` | ⚠️ Optional (default: `gpt-4o-mini`) |
-| `EMBEDDING_MODEL` | Embedding model for vectorization | `text-embedding-3-small` | ⚠️ Optional (default: `text-embedding-3-small`) |
-| `ADMIN_API_KEY` | Secret key for admin endpoints (document ingestion) | `your-secure-key` | ⚠️ Optional (default: `change-me`) |
-| `APP_ENV` | Application environment | `development` or `production` | ⚠️ Optional (default: `development`) |
-
-**⚠️ Important Security Notes:**
-
-- Never commit `.env` to version control. Add it to `.gitignore`.
-- Change `ADMIN_API_KEY` to a secure random value in production.
-- Use environment variables instead of hardcoding secrets.
-- Restrict API key access to only the services that need them.
-
-### Step 4 — Load sample company knowledge
-
-```bash
+Do not add real credentials to this README or commit them to version control. If the configuration code uses different names, follow app/core/config.py and your existing .env rather than blindly copying this example.
+### Step 5 — Start Ollama and verify the model
+Ensure Ollama is running, then check:
+ollama list
+If Qwen 3 8B is not downloaded and your computer has sufficient memory:
+ollama pull qwen3:8b
+### Step 6 — Ingest sample knowledge
 python ingest_sample_kb.py
-```
-
-This demonstrates the RAG ingestion pipeline:
-
-```text
-Company Documents
-   ↓
-Load Documents
-   ↓
-Chunk Text
-   ↓
-HuggingFace Embeddings
-   ↓
-Pinecone Vector Database
-```
-
-### Step 5 — Run the application
-
-```bash
+Run this when you need to index or refresh the sample documents. Avoid repeatedly ingesting the same files unless your ingestion logic handles duplicate document IDs.
+## 9. Run the Application
+Start the API and UI:
 python run.py
-```
-
-Open:
-
-```text
-http://127.0.0.1:8000
-```
-
-FastAPI API docs:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
----
-
-## 8. Classroom Demo Scenarios
-
-### Demo A — Private KB Success
-
-Ask:
-
-> **How do I connect to the company VPN from home?**
-
-Expected path:
-
-```text
-Router → KB
-Private KB Retrieval
-KB Grade → GOOD
-Generate from Private KB
-```
-
-Teaching point:
-
-> Trusted internal company knowledge is preferred. No public web call is necessary.
-
----
-
-### Demo B — Company Policy Question
-
-Ask:
-
-> **Can IT support ask me to share my MFA code?**
-
-The internal handbook says employees must never share passwords or MFA codes with support personnel.
-
-Expected path:
-
-```text
-Router → KB
-Private KB Retrieval
-KB Grade → GOOD
-Private KB Answer
-```
-
-Teaching point:
-
-> RAG allows the model to answer using company-specific information it was never trained on.
-
----
-
-### Demo C — External / Current Information
-
-Ask:
-
-> **What is the latest Microsoft Teams outage guidance?**
-
-Expected path when internal documents do not answer it:
-
-```text
-Router → KB
-Private KB Retrieval
-KB Grade → WEAK
-Tavily Search
-Web Grade → GOOD
-Web Answer
-```
-
-Teaching point:
-
-> Agentic RAG can choose another information source rather than blindly answering from irrelevant vectors.
-
----
-
-### Demo D — Query Rewrite
-
-Ask a deliberately vague question such as:
-
-> **My work communication app is acting strange after the new update. What should I do?**
-
-If both KB and first external retrieval are weak, the workflow can rewrite the query and retry.
-
-Teaching point:
-
-> Retrieval failure does not immediately mean failure. An agent can improve the search query and try again while using a retry guard to avoid loops.
-
----
-
-### Demo E — Direct Conversation
-
-Ask:
-
-> **Hello!**
-
-Expected path:
-
-```text
-Router → DIRECT
-Direct Answer
-```
-
-Teaching point:
-
-> Not every message should trigger expensive vector search or web search.
-
----
-
-## 9. Document Upload Demo
-
-The sidebar contains **Add Company Document**.
-
-Use the `ADMIN_API_KEY` from `.env`.
-
-Upload one of:
-
-- `.pdf`
-- `.txt`
-- `.md`
-- `.docx`
-
-The backend performs:
-
-```text
-Upload
-  ↓
-Validate Type
-  ↓
-Load Text
-  ↓
-Recursive Chunking
-  ↓
-Embeddings
-  ↓
-Pinecone Indexing
-  ↓
-Immediately Available for Retrieval
-```
-
-This is useful in an FDE demonstration because the customer does not want to edit Python every time a new policy is published.
-
----
-
+Open the application:
+- Web UI: http://127.0.0.1:8000
+- FastAPI Swagger docs: http://127.0.0.1:8000/docs
+- Health endpoint: http://127.0.0.1:8000/api/health
+The local Qwen model can take several seconds to respond, depending on hardware and model settings.
 ## 10. API Endpoints
-
-### `GET /api/health`
-
-Health check.
-
-### `POST /api/chat`
-
-Request:
-
-```json
+GET /api/health
+Checks whether the API is running.
+POST /api/chat
+Example request:
 {
-  "question": "How do I reset my company password?"
+  "question": "How do I connect to the company VPN?"
 }
-```
+The response includes:
+- answer: generated answer or safe fallback
+- source_used: response source label
+- trace: workflow events
+- citations: private knowledge or web references, when available
+- rewritten_query: current query used by the workflow (currently usually the original question)
+POST /api/ingest
+Uploads and indexes a supported document. The request requires the X-Admin-Key header to match the configured admin key. Supported file types and size limits are enforced by the ingestion endpoint.
+## 11. Demo Scenarios
+Demo A — Private knowledge base
+Question:
+How do I connect to the company VPN?
 
-Response contains:
+Expected behavior: the system retrieves internal handbook content and answers from the private KB when the retrieved evidence is sufficient.
+Demo B — Direct greeting
+Question:
+Hi
 
-```json
-{
-  "answer": "...",
-  "source_used": "private_kb",
-  "trace": [
-    "Router → KB",
-    "Private KB retrieval → 4 chunks",
-    "KB evidence grade → GOOD",
-    "Answer generation → PRIVATE KB"
-  ],
-  "citations": []
-}
-```
+Expected behavior: the rule-based router returns a direct greeting without retrieval or an LLM call.
+Demo C — Current external information
+Question:
+What is the latest Microsoft Teams outage guidance?
 
-### `POST /api/ingest`
+Expected behavior: the system attempts Tavily search if configured. If the search results do not provide sufficient usable evidence, it returns a safe fallback rather than claiming to know the latest status.
+Demo D — Protected document ingestion
+Try uploading a supported text document without an admin key.
 
-Protected by the `X-Admin-Key` request header.
+Expected behavior: the endpoint rejects the request with 401 Unauthorized.
+## 12. Security Notes
+- Keep .env out of version control.
+- Never hardcode API keys or paste them into issues, screenshots, or public repositories.
+- Use a long, unique admin key; do not use placeholder values in production.
+- Restrict the ingestion endpoint to trusted administrators.
+- Validate uploaded content and consider request-size limits at the server or reverse proxy.
+- Do not expose stack traces or secret values to API clients.
+- Review audit data handling and retention before using real employee questions.
+- Treat retrieved documents and web content as untrusted input.
+- This project has not yet undergone a full security audit and should not be used with sensitive production data without further review.
+## 13. Testing
+The API and several workflow paths have been manually exercised during development. Automated tests have not yet been confirmed to run successfully.
 
-Uploads a document and adds its chunks to Pinecone.
-
----
+Once test functions are present in the tests/ directory, run:
+python -m pytest -q
+A previous run reported no tests ran, so automated test coverage remains a work item. Before production use, add tests for retrieval, ingestion, routing, fallback behavior, API validation, and unauthorized uploads.
+## 14. Known Limitations and Roadmap
+Current limitations:
+- Rule-based routing recognizes a fixed set of greetings; it is not a general intent classifier.
+- The workflow does not yet have a dedicated structured evidence-grading node.
+- Query rewriting and retry loops are not implemented in the current workflow.
+- External search quality depends on Tavily configuration and result relevance.
+- Citation deduplication, source quality, and freshness need additional validation.
+- Automated tests and deployment have not been completed or verified.
+- The current application is a development baseline, not a production-hardened service.
+Suggested next steps:
+1. Add deterministic automated tests for the workflow and API.
+2. Add structured evidence grading and a bounded query-rewrite/retrieval retry.
+3. Improve source citation quality and remove duplicate citations.
+4. Add upload and authentication hardening, rate limiting, and clearer operational logging.
+5. Measure latency and retrieval quality with a small evaluation dataset.
+6. Add screenshots, a short demo recording, and verified deployment instructions.
+7. Evaluate Docker packaging and deployment only after the local setup is reproducible.
+## License
+See the LICENSE file in this repository.

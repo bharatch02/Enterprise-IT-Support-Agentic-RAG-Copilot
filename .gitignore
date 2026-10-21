@@ -218,3 +218,22 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+
+# Project-specific secrets
+.env.*
+!.env.example
+
+# IDE settings
+.idea/
+
+# Local databases and uploaded documents
+data/*.db
+uploads/*
+!uploads/.gitkeep
+
+# Python test and type-checking artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
