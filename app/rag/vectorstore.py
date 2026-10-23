@@ -1,7 +1,4 @@
 import time
-from pinecone import Pinecone , ServerlessSpec
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_pinecone import PineconeVectorStore
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -44,6 +41,8 @@ def get_embeddings():
     global _embeddings
 
     if _embeddings is None:
+        from langchain_huggingface import HuggingFaceEmbeddings
+
         _embeddings = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2",
             model_kwargs={"device": "cpu"},
@@ -55,6 +54,8 @@ def get_embeddings():
 def ensure_index():
     if not settings.pinecone_api_key:
         raise RuntimeError("PINECONE_API_KEY is missing")
+
+    from pinecone import Pinecone, ServerlessSpec
 
     desired_dimension = get_embedding_dimension()
     pc = Pinecone(api_key=settings.pinecone_api_key)
@@ -88,7 +89,10 @@ def ensure_index():
 
 def get_vectorstore():
     global _vectorstore
+
     if _vectorstore is None:
+        from langchain_pinecone import PineconeVectorStore
+
         index = ensure_index()
         _vectorstore = PineconeVectorStore(
             index=index,

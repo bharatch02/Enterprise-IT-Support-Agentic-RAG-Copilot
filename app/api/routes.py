@@ -7,17 +7,11 @@ from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
 
-print("ROUTES CHECK 1: before workflow import", flush=True)
 from app.rag.workflow import ask
-print("ROUTES CHECK 2: after workflow import", flush=True)
 
-print("ROUTES CHECK 3: before vectorstore import", flush=True)
 from app.rag.vectorstore import add_documents
-print("ROUTES CHECK 4: after vectorstore import", flush=True)
 
-print("ROUTES CHECK 5: before ingestion import", flush=True)
 from app.services.ingestion import load_file, chunk_documents, SUPPORTED
-print("ROUTES CHECK 6: after ingestion import", flush=True)
 from app.services.audit import write_audit
 
 router = APIRouter(prefix="/api")
