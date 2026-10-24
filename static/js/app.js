@@ -1,5 +1,6 @@
 
 import { fetchJson } from "./api-client.mjs";
+import { createChatSession } from "./chat-session.mjs";
 
 const chat = document.getElementById("chat");
 const form = document.getElementById("chatForm");
@@ -7,10 +8,10 @@ const question = document.getElementById("question");
 const trace = document.getElementById("trace");
 const sourceUsed = document.getElementById("sourceUsed");
 const sendBtn = form.querySelector('button[type="submit"]');
-const CHAT_STORAGE_KEY = "it_support_copilot_chat_v1";
-const SOURCE_STORAGE_KEY = "it_support_copilot_source_v1";
-
 let isSending = false;
+const session = createChatSession();
+const welcomeState = chat.firstElementChild.cloneNode(true);
+const newChatBtn = document.getElementById("newChatBtn");
 
 function escapeHtml(s = "") {
   return String(s).replace(/[&<>'"]/g, c => ({
@@ -31,39 +32,7 @@ function scrollChatToBottom() {
 }
 
 
-function saveChat() {
-  const messages = [...chat.querySelectorAll(".message")].map(message => {
-    const bubble = message.querySelector(".bubble");
-    const sourceElement = bubble.querySelector(".answer-source");
-
-    const citations = [...bubble.querySelectorAll(".citations a")].map(link => ({
-      title: link.textContent,
-      url: link.href
-    }));
-
-    return {
-      role: message.classList.contains("user") ? "user" : "assistant",
-      text: bubble.querySelector(".message-text")?.textContent
-        ?? bubble.innerText.replace(
-          sourceElement?.innerText || "",
-          ""
-        ).trim(),
-      source: sourceElement
-        ? sourceElement.textContent.replace(/^Source:\s*/, "")
-        : "",
-      citations
-    };
-  });
-
-  try {
-    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages));
-    localStorage.setItem(SOURCE_STORAGE_KEY, sourceUsed.textContent);
-  } catch (error) {
-    console.warn("Could not save chat history:", error);
-  }
-}
-
-function addMessage(role, text, source = "", citations = [], shouldSave = true) {
+function addMessage(role, text, source = "", citations = []) {
   const wrap = document.createElement("div");
   wrap.className = `message ${role}`;
 
@@ -93,59 +62,35 @@ function addMessage(role, text, source = "", citations = [], shouldSave = true) 
 
   chat.appendChild(wrap);
   scrollChatToBottom();
-
-  if (shouldSave) {
-    saveChat();
-  }
 }
 
-function restoreChat() {
+// Remove only keys used by the former active-chat persistence feature.
+try {
+  localStorage.removeItem("it_support_copilot_chat_v1");
+  localStorage.removeItem("it_support_copilot_source_v1");
+} catch (error) {
+  console.warn("Could not clear the previous active chat:", error);
+}
+
+function startNewChat() {
+  session.reset();
+  isSending = false;
+  sendBtn.disabled = false;
+  question.disabled = false;
+  question.value = "";
+  chat.replaceChildren(welcomeState.cloneNode(true));
+  renderTrace([]);
+  sourceUsed.textContent = "—";
   try {
-    const saved = localStorage.getItem(CHAT_STORAGE_KEY);
-
-    if (saved === null) {
-      return;
-    }
-
-    const messages = JSON.parse(saved);
-
-    if (!Array.isArray(messages)) {
-      return;
-    }
-
-    chat.innerHTML = "";
-
-    messages.forEach(message => {
-      if (
-        !message ||
-        !["user", "assistant"].includes(message.role) ||
-        typeof message.text !== "string"
-      ) {
-        return;
-      }
-
-      addMessage(
-        message.role,
-        message.text,
-        message.source || "",
-        Array.isArray(message.citations) ? message.citations : [],
-        false
-      );
-    });
-
-    const savedSource = localStorage.getItem(SOURCE_STORAGE_KEY);
-
-    if (savedSource) {
-      sourceUsed.textContent = savedSource;
-    }
-
-    scrollChatToBottom();
+    localStorage.removeItem("it_support_copilot_chat_v1");
+    localStorage.removeItem("it_support_copilot_source_v1");
   } catch (error) {
-    console.warn("Could not restore chat history:", error);
+    console.warn("Could not clear the previous active chat:", error);
   }
+  question.focus();
 }
 
-restoreChat();
+newChatBtn.addEventListener("click", startNewChat);
 
 function renderTrace(items = []) {
   trace.innerHTML = items.length
@@ -161,9 +106,12 @@ function renderTrace(items = []) {
 async function askAgent(q) {
   q = q.trim();
 
-  if (!q || isSending) {
+  if (!q) {
     return;
   }
+
+  const request = session.begin();
+  if (!request) return;
 
   isSending = true;
   sendBtn.disabled = true;
@@ -181,10 +129,13 @@ async function askAgent(q) {
       headers: {
         "Content-Type": "application/json"
       },
+      signal: request.controller.signal,
       body: JSON.stringify({
         question: q
       })
     });
+
+    if (!session.isCurrent(request)) return;
 
     if (typeof data.answer !== "string") {
       throw new Error("The server response did not include an answer. Please try again.");
@@ -199,19 +150,19 @@ async function askAgent(q) {
 
     renderTrace(data.trace || []);
     sourceUsed.textContent = data.source_used || "Unknown";
-    saveChat();
-
   } catch (e) {
+    if (!session.isCurrent(request)) return;
     addMessage("assistant", `Error: ${e.message}`);
     renderTrace(["Request failed"]);
     sourceUsed.textContent = "Error";
-    saveChat();
-
   } finally {
-    isSending = false;
-    sendBtn.disabled = false;
-    question.disabled = false;
-    question.focus();
+    if (session.isCurrent(request)) {
+      session.finish(request);
+      isSending = false;
+      sendBtn.disabled = false;
+      question.disabled = false;
+      question.focus();
+    }
   }
 }
 

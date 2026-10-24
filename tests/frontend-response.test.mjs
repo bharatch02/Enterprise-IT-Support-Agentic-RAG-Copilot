@@ -99,3 +99,20 @@ test("aborts a request after its configured timeout", async () => {
     /timed out after 1 seconds/i,
   );
 });
+
+test("caller abort cancels the fetch and reports it as an aborted request", async () => {
+  const controller = new AbortController();
+  const slowFetch = (_url, { signal }) => new Promise((resolve, reject) => {
+    signal.addEventListener("abort", () => {
+      reject(new DOMException("Aborted", "AbortError"));
+    }, { once: true });
+  });
+  const pending = fetchJson("/api/chat", { signal: controller.signal }, {
+    timeoutMs: 5000,
+    fetchImpl: slowFetch,
+  });
+
+  controller.abort();
+
+  await assert.rejects(pending, /request was cancelled/i);
+});

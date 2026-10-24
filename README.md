@@ -148,7 +148,7 @@ The project also includes the `LICENSE` and this `README.md` at its root.
 - Qwen model downloaded in Ollama (for example, qwen3:8b)
 - Pinecone account and API key
 - Tavily API key if external web fallback is required
-The local LLM and embeddings do not require an OpenAI API key. Pinecone and Tavily are external services and may have their own usage limits or pricing; check their current plans before relying on them.
+For local development, Ollama and the Hugging Face embeddings are used by default. A Render deployment cannot reach Ollama on your Windows computer through `localhost`; configure a reachable model provider in Render. Pinecone and Tavily are external services and may have their own usage limits or pricing; check their current plans before relying on them.
 ## 8. Local Setup
 ### Step 1 — Open the project directory
 cd C:\Users\KHUSHI\NewFolder\Enterprise-IT-Support-Agentic-RAG-Copilot
@@ -161,6 +161,16 @@ conda create -n project python=3.11 -y
 conda activate project
 ### Step 3 — Install dependencies
 python -m pip install -r requirements.txt
+### Step 3a — Download the embedding model before the first chat
+
+The application uses the existing `sentence-transformers/all-MiniLM-L6-v2` model (384 dimensions, compatible with the current Pinecone index). Download it once into the local Hugging Face cache before starting the application:
+
+```powershell
+python scripts/download_embedding_model.py
+```
+
+The application checks the local model cache only by default. To store the model in a specific directory, set `EMBEDDING_MODEL_PATH` to that directory. An optional `HF_TOKEN` environment variable is passed to Hugging Face for authenticated downloads; never put the token in source files or logs.
+
 ### Step 4 — Configure environment variables
 Create a local .env file in the project root. Use the variable names expected by app/core/config.py. The exact settings and defaults in that file are authoritative.
 
@@ -175,7 +185,19 @@ TAVILY_API_KEY=your_tavily_api_key_if_used
 ADMIN_API_KEY=replace_with_a_long_random_secret
 
 APP_ENV=development
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen3:8b
+LLM_REQUEST_TIMEOUT_SECONDS=35
+TAVILY_REQUEST_TIMEOUT_SECONDS=10
+PINECONE_CONTROL_TIMEOUT_SECONDS=8
+PINECONE_QUERY_TIMEOUT_SECONDS=15
+EMBEDDING_LOCAL_FILES_ONLY=true
 Do not add real credentials to this README or commit them to version control. If the configuration code uses different names, follow app/core/config.py and your existing .env rather than blindly copying this example.
+
+For Render, configure `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPENAI_MODEL` in the service environment, and choose a model available to your account. OpenAI API usage may incur charges; check current pricing before enabling it. Keep `OLLAMA_BASE_URL` for local development, or set it to a separately hosted, reachable Ollama service if you intend to use Ollama in production. Never paste credentials into chat or commit them.
+For a Render Docker service, the Dockerfile downloads the same embedding model during image build into `/opt/models/all-MiniLM-L6-v2` and runs with `EMBEDDING_LOCAL_FILES_ONLY=true`. The model files are included in the built image, not committed to the repository. To authenticate the build-time download, add a Render secret file named `hf_token` containing only the Hugging Face token; the Dockerfile mounts it only for the download step, and `.dockerignore` keeps it out of the build context. `HF_TOKEN` can also be supplied as a runtime environment variable when explicitly allowing online cache misses, but authentication alone does not replace the local preload. A native Render runtime that does not build this Dockerfile must run `python scripts/download_embedding_model.py` in its build command and set `EMBEDDING_MODEL_PATH` to the resulting directory (or keep the model in the Hugging Face cache).
+
 ### Step 5 — Start Ollama and verify the model
 Ensure Ollama is running, then check:
 ollama list

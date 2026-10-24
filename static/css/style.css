@@ -154,6 +154,27 @@ button {
   color: #aab6c5;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.new-chat-btn {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 0 13px;
+  border: 1px solid #347757;
+  border-radius: 10px;
+  background: #153426;
+  color: #9af0c2;
+  font-weight: 700;
+}
+
+.new-chat-btn:hover {
+  background: #1c4933;
+}
+
 /* Only this element scrolls during chat */
 .chat-area {
   flex: 1 1 0;
@@ -519,6 +540,12 @@ button {
 
   .pill {
     display: none;
+  }
+
+  .new-chat-btn {
+    min-height: 36px;
+    padding: 0 10px;
+    font-size: 12px;
   }
 
   .chat-area {

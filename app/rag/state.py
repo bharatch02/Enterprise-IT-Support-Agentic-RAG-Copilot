@@ -11,6 +11,7 @@ class EvidenceGrade(BaseModel):
 
 class AgentState(TypedDict):
     request_id: NotRequired[str]
+    model_failed: NotRequired[bool]
     question: str
     current_query: str
     kb_docs: List[Document]

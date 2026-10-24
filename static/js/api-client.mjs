@@ -6,8 +6,21 @@ export async function fetchJson(
   { timeoutMs = DEFAULT_TIMEOUT_MS, fetchImpl = globalThis.fetch } = {},
 ) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  let timeoutExpired = false;
+  const timeoutId = setTimeout(() => {
+    timeoutExpired = true;
+    controller.abort();
+  }, timeoutMs);
   let requestId = "";
+  const callerSignal = options.signal;
+  const requestOptions = { ...options };
+  delete requestOptions.signal;
+  const abortFromCaller = () => controller.abort(callerSignal.reason);
+  callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+
+  if (callerSignal?.aborted) {
+    abortFromCaller();
+  }
 
   const withRequestId = (message) =>
     requestId && !message.includes(requestId)
@@ -16,7 +29,7 @@ export async function fetchJson(
 
   try {
     const response = await fetchImpl(url, {
-      ...options,
+      ...requestOptions,
       signal: controller.signal,
     });
     requestId = response.headers?.get?.("x-request-id") || "";
@@ -60,6 +73,9 @@ export async function fetchJson(
     return data;
   } catch (error) {
     if (error?.name === "AbortError") {
+      if (callerSignal?.aborted && !timeoutExpired) {
+        throw new Error(withRequestId("The request was cancelled."));
+      }
       throw new Error(
         withRequestId(
           `The request timed out after ${Math.ceil(timeoutMs / 1000)} seconds. Please try again.`,
@@ -78,5 +94,6 @@ export async function fetchJson(
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
   }
 }

@@ -2,11 +2,10 @@
 import logging
 import re
 import time
+import requests
 from typing import Literal
 from uuid import uuid4
 
-from langchain_ollama import ChatOllama
-from langchain_tavily import TavilySearch
 from langgraph.graph import StateGraph, START, END
 
 from app.core.config import get_settings
@@ -36,25 +35,47 @@ SAFE_FALLBACK = (
 
 
 def llm():
-    """Create the local Ollama model once and reuse it."""
+    """Create the configured chat model once and reuse it."""
     global _llm
 
     if _llm is None:
-        _llm = ChatOllama(
-            model=settings.ollama_model,
-            base_url=settings.ollama_base_url,
-            temperature=0,
-            num_ctx=4096,
-            num_predict=256,
-            reasoning=False,
-        )
+        provider = settings.llm_provider.strip().lower()
+        if provider == "ollama":
+            from langchain_ollama import ChatOllama
+
+            _llm = ChatOllama(
+                model=settings.ollama_model,
+                base_url=settings.ollama_base_url,
+                temperature=0,
+                num_ctx=4096,
+                num_predict=256,
+                reasoning=False,
+                client_kwargs={"timeout": settings.llm_request_timeout_seconds},
+            )
+        elif provider == "openai":
+            if not settings.openai_api_key:
+                raise RuntimeError(
+                    "OPENAI_API_KEY is required when LLM_PROVIDER=openai"
+                )
+            from langchain_openai import ChatOpenAI
+
+            _llm = ChatOpenAI(
+                model=settings.openai_model,
+                api_key=settings.openai_api_key,
+                temperature=0,
+                max_tokens=256,
+                timeout=settings.llm_request_timeout_seconds,
+                max_retries=0,
+            )
+        else:
+            raise RuntimeError("LLM_PROVIDER must be either 'ollama' or 'openai'")
 
     return _llm
 
 
 
 def web_search_tool():
-    """Initialize Tavily only when external search is needed."""
+    """Create a bounded Tavily client only when external search is needed."""
     global _web_search
 
     if not settings.tavily_api_key:
@@ -62,15 +83,37 @@ def web_search_tool():
         raise RuntimeError("Tavily API key is not configured.")
 
     if _web_search is None:
-        _web_search = TavilySearch(
-            tavily_api_key=settings.tavily_api_key,
-            max_results=5,
-            topic="general",
-            include_answer=True,
-            include_raw_content=False,
+        _web_search = BoundedTavilySearch(
+            api_key=settings.tavily_api_key,
+            timeout_seconds=settings.tavily_request_timeout_seconds,
         )
 
     return _web_search
+
+
+class BoundedTavilySearch:
+    """Small Tavily API adapter with explicit HTTP timeouts."""
+
+    def __init__(self, api_key: str, timeout_seconds: float):
+        self.api_key = api_key
+        self.timeout_seconds = timeout_seconds
+
+    def invoke(self, payload: dict) -> dict:
+        response = requests.post(
+            "https://api.tavily.com/search",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json={
+                "query": payload["query"],
+                "max_results": 5,
+                "topic": "general",
+                "search_depth": "basic",
+                "include_answer": True,
+                "include_raw_content": False,
+            },
+            timeout=(5, self.timeout_seconds),
+        )
+        response.raise_for_status()
+        return response.json()
 
 
 # --------------------------------------------------
@@ -289,7 +332,7 @@ def retrieve_kb(state: AgentState) -> dict:
     )
 
     try:
-        retriever = get_retriever()
+        retriever = get_retriever(request_id=request_id)
         documents = retriever.invoke(state["current_query"])
 
         logger.info(
@@ -439,10 +482,10 @@ Answer:
             type(exc).__name__,
             round((time.perf_counter() - started) * 1000),
         )
-
         return {
             "answer": "",
             "citations": [],
+            "model_failed": True,
             "trace": add_trace(
                 state,
                 "KB answer generation failed → checking web fallback",
@@ -545,6 +588,21 @@ def generate_from_web(state: AgentState) -> dict:
     """Answer from web evidence or return a safe fallback."""
     evidence = state.get("web_results", "").strip()
     request_id = state.get("request_id", "unknown")
+
+    if state.get("model_failed"):
+        logger.info(
+            "workflow_stage_skipped request_id=%s stage=ollama_web_answer reason=previous_model_failure",
+            request_id,
+        )
+        return {
+            "answer": SAFE_FALLBACK,
+            "source_used": "insufficient_evidence",
+            "citations": state.get("citations", []),
+            "trace": add_trace(
+                state,
+                "Model unavailable; returned safe fallback with web citations",
+            ),
+        }
 
     if not evidence:
         logger.info(
@@ -786,6 +844,7 @@ def ask(question: str, request_id: str | None = None) -> dict:
 
     initial_state: AgentState = {
         "request_id": request_id,
+        "model_failed": False,
         "question": question,
         "current_query": question,
         "kb_docs": [],

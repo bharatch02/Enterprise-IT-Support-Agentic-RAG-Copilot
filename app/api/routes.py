@@ -1,6 +1,7 @@
 
 import logging
 from pathlib import Path
+import time
 from uuid import uuid4
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Header, Response
@@ -58,16 +59,26 @@ def chat(payload: ChatRequest, response: Response):
         result = ask(question, request_id=request_id)
 
         # Audit logging must not discard a successfully generated answer.
+        audit_started = time.perf_counter()
+        logger.info("workflow_stage_started request_id=%s stage=audit_write", request_id)
         try:
             write_audit(
                 question,
                 result.get("source_used", "unknown"),
                 result.get("trace", []),
             )
-        except Exception:
+        except Exception as exc:
             logger.error(
-                "chat_audit_write_failed request_id=%s",
+                "workflow_stage_failed request_id=%s stage=audit_write error_type=%s duration_ms=%d",
                 request_id,
+                type(exc).__name__,
+                round((time.perf_counter() - audit_started) * 1000),
+            )
+        else:
+            logger.info(
+                "workflow_stage_completed request_id=%s stage=audit_write duration_ms=%d",
+                request_id,
+                round((time.perf_counter() - audit_started) * 1000),
             )
 
         logger.info(

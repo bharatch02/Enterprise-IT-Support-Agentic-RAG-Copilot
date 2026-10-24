@@ -12,10 +12,16 @@ class Settings(BaseSettings):
     app_env: str = "development"
 
     # AI model configuration
+    llm_provider: str = "ollama"
+    llm_request_timeout_seconds: float = 35.0
+    tavily_request_timeout_seconds: float = 10.0
+    hf_hub_etag_timeout_seconds: float = 10.0
+    hf_hub_download_timeout_seconds: float = 30.0
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3:8b"
 
     openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
     pinecone_api_key: str = ""
     tavily_api_key: str = ""
 
@@ -23,7 +29,11 @@ class Settings(BaseSettings):
     pinecone_namespace: str = "company-it-kb"
 
     embedding_model: str = "all-MiniLM-L6-v2"
-    openai_mode: str = "gpt-4o-mini"
+    embedding_model_path: str = ""
+    embedding_local_files_only: bool = True
+    pinecone_control_timeout_seconds: float = 8.0
+    pinecone_query_timeout_seconds: float = 15.0
+    pinecone_index_ready_timeout_seconds: float = 60.0
 
     top_k: int = 4
     max_retries: int = 1
