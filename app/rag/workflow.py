@@ -1,7 +1,9 @@
 
 import logging
 import re
+import time
 from typing import Literal
+from uuid import uuid4
 
 from langchain_ollama import ChatOllama
 from langchain_tavily import TavilySearch
@@ -56,6 +58,7 @@ def web_search_tool():
     global _web_search
 
     if not settings.tavily_api_key:
+        logger.warning("integration_skipped integration=tavily reason=missing_api_key")
         raise RuntimeError("Tavily API key is not configured.")
 
     if _web_search is None:
@@ -236,6 +239,10 @@ def route_question(state: AgentState) -> dict:
     }
 
     if question in casual_messages:
+        logger.info(
+            "workflow_stage_completed request_id=%s stage=question_router route=direct",
+            state.get("request_id", "unknown"),
+        )
         return {
             "current_query": state["question"].strip(),
             "source_used": "direct",
@@ -245,6 +252,10 @@ def route_question(state: AgentState) -> dict:
             ),
         }
 
+    logger.info(
+        "workflow_stage_completed request_id=%s stage=question_router route=private_kb",
+        state.get("request_id", "unknown"),
+    )
     return {
         "current_query": state["question"].strip(),
         "source_used": "private_kb",
@@ -270,13 +281,22 @@ def route_after_router(
 
 def retrieve_kb(state: AgentState) -> dict:
     """Retrieve relevant document chunks from the vector store."""
+    request_id = state.get("request_id", "unknown")
+    started = time.perf_counter()
+    logger.info(
+        "workflow_stage_started request_id=%s stage=private_kb_retrieval",
+        request_id,
+    )
+
     try:
         retriever = get_retriever()
         documents = retriever.invoke(state["current_query"])
 
         logger.info(
-            "Private KB retrieval returned %d chunks",
+            "workflow_stage_completed request_id=%s stage=private_kb_retrieval chunks=%d duration_ms=%d",
+            request_id,
             len(documents),
+            round((time.perf_counter() - started) * 1000),
         )
 
         return {
@@ -287,8 +307,13 @@ def retrieve_kb(state: AgentState) -> dict:
             ),
         }
 
-    except Exception:
-        logger.exception("Private KB retrieval failed")
+    except Exception as exc:
+        logger.error(
+            "workflow_stage_failed request_id=%s stage=private_kb_retrieval error_type=%s duration_ms=%d",
+            request_id,
+            type(exc).__name__,
+            round((time.perf_counter() - started) * 1000),
+        )
 
         return {
             "kb_docs": [],
@@ -306,8 +331,13 @@ def retrieve_kb(state: AgentState) -> dict:
 def generate_from_kb(state: AgentState) -> dict:
     """Answer only when retrieved company evidence is sufficient."""
     documents = state.get("kb_docs", [])
+    request_id = state.get("request_id", "unknown")
 
     if not documents:
+        logger.info(
+            "workflow_stage_skipped request_id=%s stage=private_kb_answer reason=no_documents",
+            request_id,
+        )
         return {
             "answer": "",
             "citations": [],
@@ -357,6 +387,11 @@ Answer:
 """.strip()
 
     try:
+        started = time.perf_counter()
+        logger.info(
+            "workflow_stage_started request_id=%s stage=ollama_private_answer",
+            request_id,
+        )
         answer = extract_answer(llm().invoke(prompt))
 
         # Remove accidental Markdown code fences.
@@ -368,6 +403,11 @@ Answer:
         ).strip()
 
         if not answer or contains_insufficient_marker(answer):
+            logger.info(
+                "workflow_stage_completed request_id=%s stage=ollama_private_answer outcome=insufficient duration_ms=%d",
+                request_id,
+                round((time.perf_counter() - started) * 1000),
+            )
             return {
                 "answer": "",
                 "citations": [],
@@ -377,6 +417,11 @@ Answer:
                 ),
             }
 
+        logger.info(
+            "workflow_stage_completed request_id=%s stage=ollama_private_answer outcome=answered duration_ms=%d",
+            request_id,
+            round((time.perf_counter() - started) * 1000),
+        )
         return {
             "answer": answer,
             "source_used": "private_kb",
@@ -387,8 +432,13 @@ Answer:
             ),
         }
 
-    except Exception:
-        logger.exception("Private KB answer generation failed")
+    except Exception as exc:
+        logger.error(
+            "workflow_stage_failed request_id=%s stage=ollama_private_answer error_type=%s duration_ms=%d",
+            request_id,
+            type(exc).__name__,
+            round((time.perf_counter() - started) * 1000),
+        )
 
         return {
             "answer": "",
@@ -415,6 +465,13 @@ def after_kb(
 
 def search_web(state: AgentState) -> dict:
     """Attempt external search and retain its citations."""
+    request_id = state.get("request_id", "unknown")
+    started = time.perf_counter()
+    logger.info(
+        "workflow_stage_started request_id=%s stage=tavily_search",
+        request_id,
+    )
+
     try:
         tool = web_search_tool()
         result = tool.invoke(
@@ -424,6 +481,11 @@ def search_web(state: AgentState) -> dict:
         evidence, citations = format_search_results(result)
 
         if not evidence.strip():
+            logger.info(
+                "workflow_stage_completed request_id=%s stage=tavily_search outcome=no_evidence duration_ms=%d",
+                request_id,
+                round((time.perf_counter() - started) * 1000),
+            )
             return {
                 "web_results": "",
                 "citations": [],
@@ -433,6 +495,12 @@ def search_web(state: AgentState) -> dict:
                 ),
             }
 
+        logger.info(
+            "workflow_stage_completed request_id=%s stage=tavily_search outcome=evidence citations=%d duration_ms=%d",
+            request_id,
+            len(citations),
+            round((time.perf_counter() - started) * 1000),
+        )
         return {
             "web_results": evidence,
             "citations": citations,
@@ -442,8 +510,13 @@ def search_web(state: AgentState) -> dict:
             ),
         }
 
-    except Exception:
-        logger.exception("Web search failed")
+    except Exception as exc:
+        logger.error(
+            "workflow_stage_failed request_id=%s stage=tavily_search error_type=%s duration_ms=%d",
+            request_id,
+            type(exc).__name__,
+            round((time.perf_counter() - started) * 1000),
+        )
 
         return {
             "web_results": "",
@@ -471,8 +544,13 @@ def after_web(
 def generate_from_web(state: AgentState) -> dict:
     """Answer from web evidence or return a safe fallback."""
     evidence = state.get("web_results", "").strip()
+    request_id = state.get("request_id", "unknown")
 
     if not evidence:
+        logger.info(
+            "workflow_stage_skipped request_id=%s stage=ollama_web_answer reason=no_evidence",
+            request_id,
+        )
         return {
             "answer": SAFE_FALLBACK,
             "source_used": "insufficient_evidence",
@@ -511,6 +589,11 @@ Answer:
 """.strip()
 
     try:
+        started = time.perf_counter()
+        logger.info(
+            "workflow_stage_started request_id=%s stage=ollama_web_answer",
+            request_id,
+        )
         answer = extract_answer(llm().invoke(prompt))
 
         answer = re.sub(
@@ -522,6 +605,11 @@ Answer:
 
         # CRITICAL: Never expose the internal marker to the user.
         if not answer or contains_insufficient_marker(answer):
+            logger.info(
+                "workflow_stage_completed request_id=%s stage=ollama_web_answer outcome=insufficient duration_ms=%d",
+                request_id,
+                round((time.perf_counter() - started) * 1000),
+            )
             return {
                 "answer": SAFE_FALLBACK,
                 "source_used": "insufficient_evidence",
@@ -532,6 +620,11 @@ Answer:
                 ),
             }
 
+        logger.info(
+            "workflow_stage_completed request_id=%s stage=ollama_web_answer outcome=answered duration_ms=%d",
+            request_id,
+            round((time.perf_counter() - started) * 1000),
+        )
         return {
             "answer": answer,
             "source_used": "web_search",
@@ -542,8 +635,13 @@ Answer:
             ),
         }
 
-    except Exception:
-        logger.exception("Web answer generation failed")
+    except Exception as exc:
+        logger.error(
+            "workflow_stage_failed request_id=%s stage=ollama_web_answer error_type=%s duration_ms=%d",
+            request_id,
+            type(exc).__name__,
+            round((time.perf_counter() - started) * 1000),
+        )
 
         return {
             "answer": SAFE_FALLBACK,
@@ -578,6 +676,7 @@ def insufficient(state: AgentState) -> dict:
 
 def direct_answer(state: AgentState) -> dict:
     question = normalize_question(state["question"])
+    request_id = state.get("request_id", "unknown")
 
     responses = {
         "hi": "Hi! How can I help you today?",
@@ -599,6 +698,10 @@ def direct_answer(state: AgentState) -> dict:
         "goodbye": "Goodbye! Feel free to ask if you need IT support.",
     }
 
+    logger.info(
+        "workflow_stage_completed request_id=%s stage=direct_answer",
+        request_id,
+    )
     return {
         "answer": responses.get(
             question,
@@ -673,14 +776,16 @@ agent_graph = build_graph()
 # 11. Public function called by the FastAPI endpoint
 # --------------------------------------------------
 
-def ask(question: str) -> dict:
+def ask(question: str, request_id: str | None = None) -> dict:
     """Run the agentic RAG workflow for a user question."""
     if not isinstance(question, str) or not question.strip():
         raise ValueError("Question cannot be empty.")
 
     question = question.strip()
+    request_id = request_id or uuid4().hex[:12]
 
     initial_state: AgentState = {
+        "request_id": request_id,
         "question": question,
         "current_query": question,
         "kb_docs": [],
@@ -694,4 +799,23 @@ def ask(question: str) -> dict:
         "citations": [],
     }
 
-    return agent_graph.invoke(initial_state)
+    started = time.perf_counter()
+    logger.info("workflow_started request_id=%s", request_id)
+    try:
+        result = agent_graph.invoke(initial_state)
+    except Exception as exc:
+        logger.error(
+            "workflow_failed request_id=%s error_type=%s duration_ms=%d",
+            request_id,
+            type(exc).__name__,
+            round((time.perf_counter() - started) * 1000),
+        )
+        raise
+
+    logger.info(
+        "workflow_completed request_id=%s source=%s duration_ms=%d",
+        request_id,
+        result.get("source_used", "unknown"),
+        round((time.perf_counter() - started) * 1000),
+    )
+    return result

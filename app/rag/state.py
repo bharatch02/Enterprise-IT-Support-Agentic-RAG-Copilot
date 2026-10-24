@@ -1,5 +1,5 @@
 from typing import List, Literal
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 from pydantic import BaseModel, Field
 from langchain_core.documents import Document
 
@@ -10,6 +10,7 @@ class EvidenceGrade(BaseModel):
     grade: Literal["good", "weak"] = Field(description="Whether the evidence is sufficient to answer")
 
 class AgentState(TypedDict):
+    request_id: NotRequired[str]
     question: str
     current_query: str
     kb_docs: List[Document]

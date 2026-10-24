@@ -1,4 +1,6 @@
 
+import { fetchJson } from "./api-client.mjs";
+
 const chat = document.getElementById("chat");
 const form = document.getElementById("chatForm");
 const question = document.getElementById("question");
@@ -174,7 +176,7 @@ async function askAgent(q) {
   sourceUsed.textContent = "Running";
 
   try {
-    const res = await fetch("/api/chat", {
+    const data = await fetchJson("/api/chat", {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -184,10 +186,8 @@ async function askAgent(q) {
       })
     });
 
-    const data = await res.json();
-
-    if (!res.ok) {
-      throw new Error(data.detail || "Request failed");
+    if (typeof data.answer !== "string") {
+      throw new Error("The server response did not include an answer. Please try again.");
     }
 
     addMessage(
@@ -275,19 +275,13 @@ document.getElementById("uploadBtn").onclick = async () => {
   fd.append("file", file);
 
   try {
-    const response = await fetch("/api/ingest", {
+    const data = await fetchJson("/api/ingest", {
       method: "POST",
       headers: {
         "X-Admin-Key": key
       },
       body: fd
     });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.detail || "Upload failed");
-    }
 
     status.textContent =
       `Indexed ${data.file}: ${data.chunks} chunks.`;

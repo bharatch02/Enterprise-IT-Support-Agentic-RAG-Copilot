@@ -1,8 +1,9 @@
 
 import logging
 from pathlib import Path
+from uuid import uuid4
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Header
+from fastapi import APIRouter, UploadFile, File, HTTPException, Header, Response
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
@@ -39,18 +40,22 @@ def health():
 
 
 @router.post("/chat")
-def chat(payload: ChatRequest):
+def chat(payload: ChatRequest, response: Response):
     """Process a question through the agentic RAG workflow."""
     question = payload.question.strip()
+    request_id = uuid4().hex[:12]
+    response.headers["X-Request-ID"] = request_id
 
     if not question:
         raise HTTPException(
             status_code=400,
             detail="Question cannot be empty.",
+            headers={"X-Request-ID": request_id},
         )
 
     try:
-        result = ask(question)
+        logger.info("chat_request_started request_id=%s", request_id)
+        result = ask(question, request_id=request_id)
 
         # Audit logging must not discard a successfully generated answer.
         try:
@@ -60,7 +65,16 @@ def chat(payload: ChatRequest):
                 result.get("trace", []),
             )
         except Exception:
-            logger.exception("Failed to write chat audit record")
+            logger.error(
+                "chat_audit_write_failed request_id=%s",
+                request_id,
+            )
+
+        logger.info(
+            "chat_request_completed request_id=%s source=%s",
+            request_id,
+            result.get("source_used", "unknown"),
+        )
 
         return {
             "answer": result.get("answer", ""),
@@ -71,19 +85,30 @@ def chat(payload: ChatRequest):
         }
 
     except ValueError as exc:
+        logger.warning(
+            "chat_request_rejected request_id=%s error_type=%s",
+            request_id,
+            type(exc).__name__,
+        )
         raise HTTPException(
             status_code=400,
             detail=str(exc),
+            headers={"X-Request-ID": request_id},
         ) from exc
 
     except Exception as exc:
-        logger.exception("Chat request failed")
+        logger.error(
+            "chat_request_failed request_id=%s error_type=%s",
+            request_id,
+            type(exc).__name__,
+        )
         raise HTTPException(
             status_code=500,
             detail=(
                 "The support assistant encountered an internal error. "
-                "Please try again."
+                f"Please try again. Reference ID: {request_id}"
             ),
+            headers={"X-Request-ID": request_id},
         ) from exc
 
 

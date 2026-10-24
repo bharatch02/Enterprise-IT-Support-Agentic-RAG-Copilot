@@ -1,7 +1,9 @@
+import logging
 import time
 from app.core.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 _embeddings = None
 _vectorstore = None
@@ -41,63 +43,111 @@ def get_embeddings():
     global _embeddings
 
     if _embeddings is None:
-        from langchain_huggingface import HuggingFaceEmbeddings
+        started = time.perf_counter()
+        logger.info("integration_started integration=huggingface_embeddings")
+        try:
+            from langchain_huggingface import HuggingFaceEmbeddings
 
-        _embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
+            _embeddings = HuggingFaceEmbeddings(
+                model_name="sentence-transformers/all-MiniLM-L6-v2",
+                model_kwargs={"device": "cpu"},
+                encode_kwargs={"normalize_embeddings": True},
+            )
+        except Exception as exc:
+            logger.error(
+                "integration_failed integration=huggingface_embeddings error_type=%s duration_ms=%d",
+                type(exc).__name__,
+                round((time.perf_counter() - started) * 1000),
+            )
+            raise
+
+        logger.info(
+            "integration_completed integration=huggingface_embeddings duration_ms=%d",
+            round((time.perf_counter() - started) * 1000),
         )
 
     return _embeddings
 
 def ensure_index():
     if not settings.pinecone_api_key:
+        logger.error("integration_failed integration=pinecone reason=missing_api_key")
         raise RuntimeError("PINECONE_API_KEY is missing")
 
-    from pinecone import Pinecone, ServerlessSpec
+    started = time.perf_counter()
+    logger.info("integration_started integration=pinecone_index")
+    try:
+        from pinecone import Pinecone, ServerlessSpec
 
-    desired_dimension = get_embedding_dimension()
-    pc = Pinecone(api_key=settings.pinecone_api_key)
-    names = [x["name"] for x in pc.list_indexes()]
+        desired_dimension = get_embedding_dimension()
+        pc = Pinecone(api_key=settings.pinecone_api_key)
+        names = [x["name"] for x in pc.list_indexes()]
 
-    if settings.pinecone_index_name in names:
-        index_info = pc.describe_index(settings.pinecone_index_name)
-        current_dimension = getattr(index_info, "dimension", None)
-        if current_dimension is None and isinstance(index_info, dict):
-            current_dimension = index_info.get("dimension")
+        if settings.pinecone_index_name in names:
+            index_info = pc.describe_index(settings.pinecone_index_name)
+            current_dimension = getattr(index_info, "dimension", None)
+            if current_dimension is None and isinstance(index_info, dict):
+                current_dimension = index_info.get("dimension")
 
-        if current_dimension is not None and current_dimension != desired_dimension:
-            raise RuntimeError(
-                f"Pinecone index has dimension {current_dimension}, "
-                f"but the selected embedding model requires {desired_dimension}. "
-                "Configure a new Pinecone index for the local model."
+            if current_dimension is not None and current_dimension != desired_dimension:
+                raise RuntimeError(
+                    f"Pinecone index has dimension {current_dimension}, "
+                    f"but the selected embedding model requires {desired_dimension}. "
+                    "Configure a new Pinecone index for the local model."
+                )
+
+        if settings.pinecone_index_name not in [x["name"] for x in pc.list_indexes()]:
+            logger.info("pinecone_index_creation_started")
+            pc.create_index(
+                name=settings.pinecone_index_name,
+                dimension=desired_dimension,
+                metric="cosine",
+                spec=ServerlessSpec(cloud="aws", region="us-east-1"),
             )
+            while not pc.describe_index(settings.pinecone_index_name).status.ready:
+                time.sleep(1)
 
-    if settings.pinecone_index_name not in [x["name"] for x in pc.list_indexes()]:
-        pc.create_index(
-            name=settings.pinecone_index_name,
-            dimension=desired_dimension,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        index = pc.Index(settings.pinecone_index_name)
+    except Exception as exc:
+        logger.error(
+            "integration_failed integration=pinecone_index error_type=%s duration_ms=%d",
+            type(exc).__name__,
+            round((time.perf_counter() - started) * 1000),
         )
-        while not pc.describe_index(settings.pinecone_index_name).status.ready:
-            time.sleep(1)
+        raise
 
-    return pc.Index(settings.pinecone_index_name)
+    logger.info(
+        "integration_completed integration=pinecone_index duration_ms=%d",
+        round((time.perf_counter() - started) * 1000),
+    )
+    return index
 
 
 def get_vectorstore():
     global _vectorstore
 
     if _vectorstore is None:
-        from langchain_pinecone import PineconeVectorStore
+        started = time.perf_counter()
+        logger.info("integration_started integration=pinecone_vectorstore")
+        try:
+            from langchain_pinecone import PineconeVectorStore
 
-        index = ensure_index()
-        _vectorstore = PineconeVectorStore(
-            index=index,
-            embedding=get_embeddings(),
-            namespace=settings.pinecone_namespace,
+            index = ensure_index()
+            _vectorstore = PineconeVectorStore(
+                index=index,
+                embedding=get_embeddings(),
+                namespace=settings.pinecone_namespace,
+            )
+        except Exception as exc:
+            logger.error(
+                "integration_failed integration=pinecone_vectorstore error_type=%s duration_ms=%d",
+                type(exc).__name__,
+                round((time.perf_counter() - started) * 1000),
+            )
+            raise
+
+        logger.info(
+            "integration_completed integration=pinecone_vectorstore duration_ms=%d",
+            round((time.perf_counter() - started) * 1000),
         )
     return _vectorstore
 
