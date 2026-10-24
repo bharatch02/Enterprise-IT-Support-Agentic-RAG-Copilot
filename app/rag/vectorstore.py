@@ -56,11 +56,11 @@ def get_embeddings(request_id: str = "unknown"):
             # Hugging Face reads these environment variables when its modules load.
             os.environ.setdefault(
                 "HF_HUB_ETAG_TIMEOUT",
-                str(settings.hf_hub_etag_timeout_seconds),
+                str(int(settings.hf_hub_etag_timeout_seconds)),
             )
             os.environ.setdefault(
                 "HF_HUB_DOWNLOAD_TIMEOUT",
-                str(settings.hf_hub_download_timeout_seconds),
+                str(int(settings.hf_hub_download_timeout_seconds)),
             )
             from huggingface_hub import snapshot_download
             from huggingface_hub.errors import LocalEntryNotFoundError
@@ -98,6 +98,7 @@ def get_embeddings(request_id: str = "unknown"):
 
     return _embedding_initializer.get(initialize)
 
+
 def ensure_index(request_id: str = "unknown"):
     if not settings.pinecone_api_key:
         logger.error(
@@ -107,7 +108,8 @@ def ensure_index(request_id: str = "unknown"):
         raise RuntimeError("PINECONE_API_KEY is missing")
 
     started = time.perf_counter()
-    logger.info("integration_started request_id=%s integration=pinecone_index", request_id)
+    logger.info(
+        "integration_started request_id=%s integration=pinecone_index", request_id)
     try:
         from pinecone import Pinecone, ServerlessSpec
 
@@ -132,7 +134,8 @@ def ensure_index(request_id: str = "unknown"):
                 )
 
         if settings.pinecone_index_name not in names:
-            logger.info("pinecone_index_creation_started request_id=%s", request_id)
+            logger.info(
+                "pinecone_index_creation_started request_id=%s", request_id)
             pc.create_index(
                 name=settings.pinecone_index_name,
                 dimension=desired_dimension,
@@ -142,7 +145,8 @@ def ensure_index(request_id: str = "unknown"):
             deadline = time.monotonic() + settings.pinecone_index_ready_timeout_seconds
             while True:
                 if time.monotonic() >= deadline:
-                    raise TimeoutError("Pinecone index did not become ready before timeout")
+                    raise TimeoutError(
+                        "Pinecone index did not become ready before timeout")
                 if pc.describe_index(settings.pinecone_index_name).status.ready:
                     break
                 time.sleep(1)
@@ -200,6 +204,7 @@ def get_vectorstore(request_id: str = "unknown"):
                     round((time.perf_counter() - started) * 1000),
                 )
     return _vectorstore
+
 
 def get_retriever(request_id: str = "unknown"):
     return get_vectorstore(request_id=request_id).as_retriever(
