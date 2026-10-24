@@ -3,6 +3,7 @@ import logging
 import re
 import time
 import requests
+from threading import Lock
 from typing import Literal
 from uuid import uuid4
 
@@ -19,6 +20,8 @@ settings = get_settings()
 
 _llm = None
 _web_search = None
+_llm_lock = Lock()
+_web_search_lock = Lock()
 
 KB_INSUFFICIENT = "KB_INSUFFICIENT"
 
@@ -26,6 +29,10 @@ SAFE_FALLBACK = (
     "I couldn't find enough reliable evidence in the company "
     "knowledge base or external search to answer confidently. "
     "Please contact the IT help desk or provide more details."
+)
+LLM_DISABLED_FALLBACK = (
+    "I found relevant company documentation, but answer generation is unavailable. "
+    "Please review the cited source or contact the IT help desk."
 )
 
 
@@ -39,36 +46,45 @@ def llm():
     global _llm
 
     if _llm is None:
-        provider = settings.llm_provider.strip().lower()
-        if provider == "ollama":
-            from langchain_ollama import ChatOllama
+        with _llm_lock:
+            if _llm is None:
+                provider = settings.llm_provider.strip().lower()
+                if provider == "disabled":
+                    logger.warning(
+                        "integration_skipped integration=llm reason=provider_disabled"
+                    )
+                    raise RuntimeError("LLM provider is disabled by configuration")
+                if provider == "ollama":
+                    from langchain_ollama import ChatOllama
 
-            _llm = ChatOllama(
-                model=settings.ollama_model,
-                base_url=settings.ollama_base_url,
-                temperature=0,
-                num_ctx=4096,
-                num_predict=256,
-                reasoning=False,
-                client_kwargs={"timeout": settings.llm_request_timeout_seconds},
-            )
-        elif provider == "openai":
-            if not settings.openai_api_key:
-                raise RuntimeError(
-                    "OPENAI_API_KEY is required when LLM_PROVIDER=openai"
-                )
-            from langchain_openai import ChatOpenAI
+                    _llm = ChatOllama(
+                        model=settings.ollama_model,
+                        base_url=settings.ollama_base_url,
+                        temperature=0,
+                        num_ctx=4096,
+                        num_predict=256,
+                        reasoning=False,
+                        client_kwargs={"timeout": settings.llm_request_timeout_seconds},
+                    )
+                elif provider == "openai":
+                    if not settings.openai_api_key:
+                        raise RuntimeError(
+                            "OPENAI_API_KEY is required when LLM_PROVIDER=openai"
+                        )
+                    from langchain_openai import ChatOpenAI
 
-            _llm = ChatOpenAI(
-                model=settings.openai_model,
-                api_key=settings.openai_api_key,
-                temperature=0,
-                max_tokens=256,
-                timeout=settings.llm_request_timeout_seconds,
-                max_retries=0,
-            )
-        else:
-            raise RuntimeError("LLM_PROVIDER must be either 'ollama' or 'openai'")
+                    _llm = ChatOpenAI(
+                        model=settings.openai_model,
+                        api_key=settings.openai_api_key,
+                        temperature=0,
+                        max_tokens=256,
+                        timeout=settings.llm_request_timeout_seconds,
+                        max_retries=0,
+                    )
+                else:
+                    raise RuntimeError(
+                        "LLM_PROVIDER must be 'ollama', 'openai', or 'disabled'"
+                    )
 
     return _llm
 
@@ -83,10 +99,12 @@ def web_search_tool():
         raise RuntimeError("Tavily API key is not configured.")
 
     if _web_search is None:
-        _web_search = BoundedTavilySearch(
-            api_key=settings.tavily_api_key,
-            timeout_seconds=settings.tavily_request_timeout_seconds,
-        )
+        with _web_search_lock:
+            if _web_search is None:
+                _web_search = BoundedTavilySearch(
+                    api_key=settings.tavily_api_key,
+                    timeout_seconds=settings.tavily_request_timeout_seconds,
+                )
 
     return _web_search
 
@@ -375,6 +393,22 @@ def generate_from_kb(state: AgentState) -> dict:
     """Answer only when retrieved company evidence is sufficient."""
     documents = state.get("kb_docs", [])
     request_id = state.get("request_id", "unknown")
+
+    if settings.llm_provider.strip().lower() == "disabled":
+        logger.info(
+            "workflow_stage_skipped request_id=%s stage=private_kb_answer reason=llm_disabled",
+            request_id,
+        )
+        has_private_sources = bool(documents)
+        return {
+            "answer": LLM_DISABLED_FALLBACK if has_private_sources else SAFE_FALLBACK,
+            "source_used": "insufficient_evidence",
+            "citations": unique_citations(documents) if has_private_sources else [],
+            "trace": add_trace(
+                state,
+                "LLM disabled; returned a grounded service limitation",
+            ),
+        }
 
     if not documents:
         logger.info(

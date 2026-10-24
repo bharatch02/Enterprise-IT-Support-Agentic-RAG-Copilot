@@ -36,7 +36,7 @@ The goal is to build an IT Support Copilot that:
 - Web interface: Chat UI with an agent trace panel and document-upload interface.
 - REST API: FastAPI endpoints for health checks, chat, and document ingestion.
 - Local language model: Qwen 3 8B served through Ollama, avoiding a required paid OpenAI API.
-- Private knowledge retrieval: Hugging Face sentence-transformers/all-MiniLM-L6-v2 embeddings and Pinecone vector search.
+- Private knowledge retrieval: FastEmbed ONNX inference for the same all-MiniLM-L6-v2 model and Pinecone vector search.
 - Workflow orchestration: LangGraph routes greetings directly and IT questions through private retrieval.
 - External search fallback: Tavily search is attempted when the private knowledge base does not produce an answer, provided a Tavily API key is configured.
 - Safe fallback: If useful evidence is unavailable or answer generation fails, the application returns an insufficient-evidence message instead of intentionally inventing an answer.
@@ -112,7 +112,7 @@ The trace returned by the API helps demonstrate which path ran. The current impl
 Layer	Technology	Purpose
 Workflow orchestration	LangGraph	Stateful workflow and conditional routing
 Local LLM	Qwen 3 8B via Ollama	Local answer generation
-Embeddings	Hugging Face sentence-transformers/all-MiniLM-L6-v2	Local 384-dimensional text embeddings
+Embeddings	FastEmbed ONNX using sentence-transformers/all-MiniLM-L6-v2	Local 384-dimensional text embeddings
 Vector database	Pinecone	Store and retrieve document chunks
 External search	Tavily	Optional fallback search
 API	FastAPI	REST endpoints
@@ -148,7 +148,7 @@ The project also includes the `LICENSE` and this `README.md` at its root.
 - Qwen model downloaded in Ollama (for example, qwen3:8b)
 - Pinecone account and API key
 - Tavily API key if external web fallback is required
-For local development, Ollama and the Hugging Face embeddings are used by default. A Render deployment cannot reach Ollama on your Windows computer through `localhost`; configure a reachable model provider in Render. Pinecone and Tavily are external services and may have their own usage limits or pricing; check their current plans before relying on them.
+For local development, Ollama is the default LLM and FastEmbed runs the embedding model locally. A Render deployment cannot reach Ollama on your Windows computer through `localhost`. Render's 512 MB free instance is not a suitable place to run the configured Qwen 3 8B model. Pinecone and Tavily are external services and may have their own usage limits or pricing; check their current plans before relying on them.
 ## 8. Local Setup
 ### Step 1 — Open the project directory
 cd C:\Users\KHUSHI\NewFolder\Enterprise-IT-Support-Agentic-RAG-Copilot
@@ -163,13 +163,13 @@ conda activate project
 python -m pip install -r requirements.txt
 ### Step 3a — Download the embedding model before the first chat
 
-The application uses the existing `sentence-transformers/all-MiniLM-L6-v2` model (384 dimensions, compatible with the current Pinecone index). Download it once into the local Hugging Face cache before starting the application:
+The application uses the existing `sentence-transformers/all-MiniLM-L6-v2` model through FastEmbed and ONNX Runtime. It keeps the same 384-dimensional vectors required by the current Pinecone index while avoiding the PyTorch/Sentence Transformers runtime. Download it once into the FastEmbed cache before starting the application:
 
 ```powershell
 python scripts/download_embedding_model.py
 ```
 
-The application checks the local model cache only by default. To store the model in a specific directory, set `EMBEDDING_MODEL_PATH` to that directory. An optional `HF_TOKEN` environment variable is passed to Hugging Face for authenticated downloads; never put the token in source files or logs.
+The application checks the local model cache only by default. `EMBEDDING_MODEL_PATH` points to the FastEmbed cache directory. An optional `HF_TOKEN` environment variable is used only for authenticated model downloads; never put the token in source files or logs.
 
 ### Step 4 — Configure environment variables
 Create a local .env file in the project root. Use the variable names expected by app/core/config.py. The exact settings and defaults in that file are authoritative.
@@ -195,8 +195,12 @@ PINECONE_QUERY_TIMEOUT_SECONDS=15
 EMBEDDING_LOCAL_FILES_ONLY=true
 Do not add real credentials to this README or commit them to version control. If the configuration code uses different names, follow app/core/config.py and your existing .env rather than blindly copying this example.
 
-For Render, configure `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPENAI_MODEL` in the service environment, and choose a model available to your account. OpenAI API usage may incur charges; check current pricing before enabling it. Keep `OLLAMA_BASE_URL` for local development, or set it to a separately hosted, reachable Ollama service if you intend to use Ollama in production. Never paste credentials into chat or commit them.
-For a Render Docker service, the Dockerfile downloads the same embedding model during image build into `/opt/models/all-MiniLM-L6-v2` and runs with `EMBEDDING_LOCAL_FILES_ONLY=true`. The model files are included in the built image, not committed to the repository. To authenticate the build-time download, add a Render secret file named `hf_token` containing only the Hugging Face token; the Dockerfile mounts it only for the download step, and `.dockerignore` keeps it out of the build context. `HF_TOKEN` can also be supplied as a runtime environment variable when explicitly allowing online cache misses, but authentication alone does not replace the local preload. A native Render runtime that does not build this Dockerfile must run `python scripts/download_embedding_model.py` in its build command and set `EMBEDDING_MODEL_PATH` to the resulting directory (or keep the model in the Hugging Face cache).
+If you choose OpenAI for Render answer generation, configure `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPENAI_MODEL` in the service environment, and choose a model available to your account. OpenAI API usage may incur charges; check current pricing before enabling it. Keep `OLLAMA_BASE_URL` for local development, or set it to a separately hosted, reachable Ollama service if you intend to use Ollama in production. Never paste credentials into chat or commit them.
+For a Render Docker service, the Dockerfile downloads the ONNX model during image build into `/opt/models/fastembed` and runs with `EMBEDDING_LOCAL_FILES_ONLY=true`. The model files are included in the built image, not committed to the repository. If the public model download needs Hub authentication, provide a Render build secret file named `hf_token`; the Docker build mounts it only for the download step. `.dockerignore` excludes token files from the build context. `HF_TOKEN` is optional and is never printed by the downloader. A native Render service that does not build this Dockerfile must run `python scripts/download_embedding_model.py` during its build and configure `EMBEDDING_MODEL_PATH` to the cache directory that was produced.
+
+The current default `LLM_PROVIDER=ollama` is for local development. A Render service cannot reach Ollama at `http://localhost:11434` on your computer. To avoid a failing remote-model call without using a paid API, set `LLM_PROVIDER=disabled`: greetings and private-KB retrieval remain available, and retrieved citations are returned with a clear message that answer generation is disabled. For synthesized answers in production, configure an LLM endpoint that the Render service can reach; API usage may incur charges. Do not point the deployed service at a local-only Ollama URL.
+
+Before deploying, make sure Render's `PINECONE_INDEX_NAME` and `PINECONE_NAMESPACE` exactly match the existing index and namespace containing your vectors. This application checks the index dimension as 384; do not ingest into or create another index as part of deployment troubleshooting.
 
 ### Step 5 — Start Ollama and verify the model
 Ensure Ollama is running, then check:

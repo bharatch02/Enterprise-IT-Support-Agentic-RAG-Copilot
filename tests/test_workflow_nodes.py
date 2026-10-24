@@ -80,6 +80,27 @@ class WorkflowNodeTests(unittest.TestCase):
         self.assertEqual(fallback["citations"], state["citations"])
         model.invoke.assert_called_once()
 
+    def test_disabled_llm_returns_a_safe_message_with_private_citations(self):
+        document = SimpleNamespace(
+            metadata={"source": "vpn-runbook.md"},
+            page_content="Use the company VPN client.",
+        )
+        state = {
+            "request_id": "test-disabled-llm",
+            "current_query": "How do I connect to VPN?",
+            "kb_docs": [document],
+            "trace": [],
+        }
+
+        with patch.object(workflow.settings, "llm_provider", "disabled"):
+            with patch.object(workflow, "llm") as model_factory:
+                result = workflow.generate_from_kb(state)
+
+        model_factory.assert_not_called()
+        self.assertEqual(result["source_used"], "insufficient_evidence")
+        self.assertIn("answer generation is unavailable", result["answer"])
+        self.assertEqual(result["citations"][0]["title"], "vpn-runbook.md")
+
     def test_search_failure_is_safe_and_has_valid_node_result(self):
         state = {
             "request_id": "test-search-failure",

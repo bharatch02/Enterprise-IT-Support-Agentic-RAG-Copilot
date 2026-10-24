@@ -1,13 +1,13 @@
 
 import logging
-import os
 import time
 from threading import Lock
 
 from app.core.config import get_settings
 from app.rag.embedding_loader import (
+    FastEmbedAdapter,
     LazyInitializer,
-    resolve_embedding_model_path,
+    normalize_hf_timeout,
 )
 
 settings = get_settings()
@@ -61,38 +61,19 @@ def get_embeddings(request_id: str = "unknown"):
         )
 
         try:
-            # Hugging Face expects integer strings for these timeout variables.
-            # setdefault preserves an explicitly configured environment value.
-            os.environ.setdefault(
-                "HF_HUB_ETAG_TIMEOUT",
-                str(int(settings.hf_hub_etag_timeout_seconds)),
+            # Canonicalize inherited Render values too; setdefault would leave
+            # malformed strings such as "10.0" untouched.
+            normalize_hf_timeout(
+                "HF_HUB_ETAG_TIMEOUT", settings.hf_hub_etag_timeout_seconds
             )
-            os.environ.setdefault(
-                "HF_HUB_DOWNLOAD_TIMEOUT",
-                str(int(settings.hf_hub_download_timeout_seconds)),
+            normalize_hf_timeout(
+                "HF_HUB_DOWNLOAD_TIMEOUT", settings.hf_hub_download_timeout_seconds
             )
 
-            from huggingface_hub import snapshot_download
-            from huggingface_hub.errors import LocalEntryNotFoundError
-            from langchain_huggingface import HuggingFaceEmbeddings
-
-            model_path = resolve_embedding_model_path(
-                repository=EMBEDDING_REPOSITORY,
-                configured_path=settings.embedding_model_path,
+            embeddings = FastEmbedAdapter(
+                model_name=EMBEDDING_REPOSITORY,
+                cache_dir=settings.embedding_model_path,
                 local_files_only=settings.embedding_local_files_only,
-                token=os.getenv("HF_TOKEN") or None,
-                etag_timeout=settings.hf_hub_etag_timeout_seconds,
-                snapshot_download=snapshot_download,
-                cache_miss_error=LocalEntryNotFoundError,
-            )
-
-            embeddings = HuggingFaceEmbeddings(
-                model_name=model_path,
-                model_kwargs={
-                    "device": "cpu",
-                    "local_files_only": True,
-                },
-                encode_kwargs={"normalize_embeddings": True},
             )
 
         except Exception as exc:

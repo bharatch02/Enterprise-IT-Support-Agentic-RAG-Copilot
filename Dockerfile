@@ -14,7 +14,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-ARG EMBEDDING_MODEL_PATH=/opt/models/all-MiniLM-L6-v2
+ARG EMBEDDING_MODEL_PATH=/opt/models/fastembed
 ENV HF_HUB_ETAG_TIMEOUT=10
 ENV HF_HUB_DOWNLOAD_TIMEOUT=30
 

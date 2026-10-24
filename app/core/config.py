@@ -29,7 +29,9 @@ class Settings(BaseSettings):
     pinecone_namespace: str = "company-it-kb"
 
     embedding_model: str = "all-MiniLM-L6-v2"
-    embedding_model_path: str = ""
+    embedding_model_path: str = str(
+        Path.home() / ".cache" / "enterprise-it-support-fastembed"
+    )
     embedding_local_files_only: bool = True
     pinecone_control_timeout_seconds: float = 8.0
     pinecone_query_timeout_seconds: float = 15.0

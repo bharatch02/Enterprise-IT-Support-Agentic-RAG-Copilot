@@ -76,6 +76,24 @@ test("reports the status for non-JSON error responses", async () => {
   );
 });
 
+test("explains that an HTTP 502 may indicate an unavailable Render process", async () => {
+  await assert.rejects(
+    fetchJson(
+      "/api/chat",
+      {},
+      {
+        fetchImpl: async () => ({
+          ok: false,
+          status: 502,
+          headers: new Headers(),
+          text: async () => "<html>Bad Gateway</html>",
+        }),
+      },
+    ),
+    /HTTP 502.*may have restarted or be temporarily unavailable/,
+  );
+});
+
 test("turns fetch network errors into a useful message", async () => {
   await assert.rejects(
     fetchJson("/api/chat", {}, {

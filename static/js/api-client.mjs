@@ -41,7 +41,10 @@ export async function fetchJson(
         data = JSON.parse(responseText);
       } catch {
         if (!response.ok) {
-          throw new Error(withRequestId(`Request failed with HTTP ${response.status}.`));
+          const message = response.status === 502
+            ? "The support service returned HTTP 502 and may have restarted or be temporarily unavailable. Check Render logs and try again."
+            : `Request failed with HTTP ${response.status}.`;
+          throw new Error(withRequestId(message));
         }
 
         throw new Error(
@@ -55,8 +58,11 @@ export async function fetchJson(
         data && typeof data === "object" && !Array.isArray(data)
           ? data.detail || data.message
           : "";
+      const fallbackMessage = response.status === 502
+        ? "The support service returned HTTP 502 and may have restarted or be temporarily unavailable. Check Render logs and try again."
+        : `Request failed with HTTP ${response.status}.`;
       throw new Error(
-        withRequestId(detail || `Request failed with HTTP ${response.status}.`),
+        withRequestId(detail || fallbackMessage),
       );
     }
 

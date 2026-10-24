@@ -1,89 +1,98 @@
+import os
 import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
-from app.rag.embedding_loader import LazyInitializer, resolve_embedding_model_path
-
-
-class LocalCacheMiss(Exception):
-    pass
+from app.rag.embedding_loader import (
+    FastEmbedAdapter,
+    LazyInitializer,
+    normalize_hf_timeout,
+)
 
 
 class EmbeddingLoaderTests(unittest.TestCase):
-    def test_cached_model_is_used_without_hub_network_check(self):
-        download = Mock(return_value="/cached/model")
+    def test_cached_mode_passes_local_only_and_low_memory_settings(self):
+        model = SimpleNamespace(embedding_size=384)
+        factory = Mock(return_value=model)
 
-        path = resolve_embedding_model_path(
-            repository="sentence-transformers/all-MiniLM-L6-v2",
-            configured_path="",
+        adapter = FastEmbedAdapter(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            cache_dir=str(Path(__file__).parent),
             local_files_only=True,
-            token=None,
-            etag_timeout=10,
-            snapshot_download=download,
-            cache_miss_error=LocalCacheMiss,
+            model_factory=factory,
         )
 
-        self.assertEqual(path, "/cached/model")
-        download.assert_called_once_with(
-            repo_id="sentence-transformers/all-MiniLM-L6-v2",
-            token=None,
-            local_files_only=True,
-        )
+        self.assertIsNotNone(adapter)
+        self.assertEqual(factory.call_args.kwargs["local_files_only"], True)
+        self.assertEqual(factory.call_args.kwargs["threads"], 1)
 
-    def test_configured_model_path_bypasses_hub(self):
-        download = Mock()
-        model_dir = str(Path(__file__).parent)
-        path = resolve_embedding_model_path(
-            repository="sentence-transformers/all-MiniLM-L6-v2",
-            configured_path=model_dir,
-            local_files_only=True,
-            token=None,
-            etag_timeout=10,
-            snapshot_download=download,
-            cache_miss_error=LocalCacheMiss,
-        )
+    def test_first_time_mode_can_download_after_local_cache_miss(self):
+        model = SimpleNamespace(embedding_size=384)
+        factory = Mock(return_value=model)
 
-        self.assertEqual(path, str(Path(model_dir).resolve()))
-        download.assert_not_called()
-
-    def test_first_time_download_happens_only_after_cache_miss(self):
-        download = Mock(side_effect=[LocalCacheMiss(), "/downloaded/model"])
-
-        path = resolve_embedding_model_path(
-            repository="sentence-transformers/all-MiniLM-L6-v2",
-            configured_path="",
+        FastEmbedAdapter(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            cache_dir=str(Path(__file__).parent),
             local_files_only=False,
-            token="secret-token",
-            etag_timeout=7,
-            snapshot_download=download,
-            cache_miss_error=LocalCacheMiss,
+            model_factory=factory,
         )
 
-        self.assertEqual(path, "/downloaded/model")
-        self.assertEqual(download.call_count, 2)
-        self.assertTrue(download.call_args_list[0].kwargs["local_files_only"])
-        self.assertFalse(download.call_args_list[1].kwargs["local_files_only"])
-        self.assertEqual(download.call_args_list[1].kwargs["etag_timeout"], 7)
-        self.assertEqual(download.call_args_list[1].kwargs["token"], "secret-token")
+        self.assertEqual(factory.call_args.kwargs["local_files_only"], False)
 
-    def test_offline_cache_miss_returns_clear_failure_without_network(self):
-        download = Mock(side_effect=LocalCacheMiss())
+    def test_missing_offline_cache_fails_without_initializing_model(self):
+        factory = Mock()
+        missing_cache = str(Path(__file__).parent / "missing-fastembed-cache")
 
-        with self.assertRaisesRegex(RuntimeError, "not present locally"):
-            resolve_embedding_model_path(
-                repository="sentence-transformers/all-MiniLM-L6-v2",
-                configured_path="",
+        with self.assertRaisesRegex(RuntimeError, "model cache is not present"):
+            FastEmbedAdapter(
+                model_name="sentence-transformers/all-MiniLM-L6-v2",
+                cache_dir=missing_cache,
                 local_files_only=True,
-                token=None,
-                etag_timeout=10,
-                snapshot_download=download,
-                cache_miss_error=LocalCacheMiss,
+                model_factory=factory,
             )
 
-        download.assert_called_once()
+        factory.assert_not_called()
+
+    def test_dimension_mismatch_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, "expected 384"):
+            FastEmbedAdapter(
+                model_name="sentence-transformers/all-MiniLM-L6-v2",
+                cache_dir=str(Path(__file__).parent),
+                local_files_only=True,
+                model_factory=Mock(return_value=SimpleNamespace(embedding_size=768)),
+            )
+
+    def test_adapter_uses_small_batches_and_query_encoder(self):
+        vectors = [SimpleNamespace(tolist=lambda: [0.1, 0.2, 0.3])]
+        model = SimpleNamespace(
+            embedding_size=384,
+            embed=Mock(return_value=iter(vectors)),
+            query_embed=Mock(return_value=iter(vectors)),
+        )
+        adapter = FastEmbedAdapter(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            cache_dir=str(Path(__file__).parent),
+            local_files_only=True,
+            model_factory=Mock(return_value=model),
+        )
+
+        self.assertEqual(adapter.embed_documents(["VPN setup"]), [[0.1, 0.2, 0.3]])
+        self.assertEqual(adapter.embed_query("VPN setup"), [0.1, 0.2, 0.3])
+        self.assertEqual(model.embed.call_args.kwargs["batch_size"], 8)
+        self.assertEqual(model.query_embed.call_args.kwargs["batch_size"], 1)
+
+    def test_hub_timeout_environment_is_normalized_to_integer_strings(self):
+        with patch.dict(os.environ, {"HF_HUB_ETAG_TIMEOUT": "10.0"}, clear=False):
+            self.assertEqual(normalize_hf_timeout("HF_HUB_ETAG_TIMEOUT", 8), "10")
+            self.assertEqual(os.environ["HF_HUB_ETAG_TIMEOUT"], "10")
+
+        with patch.dict(os.environ, {"HF_HUB_DOWNLOAD_TIMEOUT": "bad"}, clear=False):
+            self.assertEqual(normalize_hf_timeout("HF_HUB_DOWNLOAD_TIMEOUT", 30), "30")
+            self.assertEqual(os.environ["HF_HUB_DOWNLOAD_TIMEOUT"], "30")
 
     def test_failed_initialization_is_not_cached(self):
         initializer = LazyInitializer()
