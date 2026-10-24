@@ -1,9 +1,14 @@
+
 import logging
 import os
 import time
 from threading import Lock
+
 from app.core.config import get_settings
-from app.rag.embedding_loader import LazyInitializer, resolve_embedding_model_path
+from app.rag.embedding_loader import (
+    LazyInitializer,
+    resolve_embedding_model_path,
+)
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -28,6 +33,7 @@ def get_embedding_dimension(model_name: str | None = None) -> int:
         raise RuntimeError("Embedding model is not configured")
 
     normalized = name.lower()
+
     if normalized in EMBEDDING_DIMENSIONS:
         return EMBEDDING_DIMENSIONS[normalized]
     if "text-embedding-3-small" in normalized:
@@ -40,20 +46,23 @@ def get_embedding_dimension(model_name: str | None = None) -> int:
         return 384
 
     raise ValueError(
-        f"Unsupported embedding model '{model_name or settings.embedding_model}' for Pinecone. "
-        "Add the matching dimension to EMBEDDING_DIMENSIONS."
+        f"Unsupported embedding model '{model_name or settings.embedding_model}' "
+        "for Pinecone. Add the matching dimension to EMBEDDING_DIMENSIONS."
     )
 
 
 def get_embeddings(request_id: str = "unknown"):
     def initialize():
         started = time.perf_counter()
+
         logger.info(
             "integration_started request_id=%s integration=huggingface_embeddings",
             request_id,
         )
+
         try:
-            # Hugging Face reads these environment variables when its modules load.
+            # Hugging Face expects integer strings for these timeout variables.
+            # setdefault preserves an explicitly configured environment value.
             os.environ.setdefault(
                 "HF_HUB_ETAG_TIMEOUT",
                 str(int(settings.hf_hub_etag_timeout_seconds)),
@@ -62,6 +71,7 @@ def get_embeddings(request_id: str = "unknown"):
                 "HF_HUB_DOWNLOAD_TIMEOUT",
                 str(int(settings.hf_hub_download_timeout_seconds)),
             )
+
             from huggingface_hub import snapshot_download
             from huggingface_hub.errors import LocalEntryNotFoundError
             from langchain_huggingface import HuggingFaceEmbeddings
@@ -75,14 +85,20 @@ def get_embeddings(request_id: str = "unknown"):
                 snapshot_download=snapshot_download,
                 cache_miss_error=LocalEntryNotFoundError,
             )
+
             embeddings = HuggingFaceEmbeddings(
                 model_name=model_path,
-                model_kwargs={"device": "cpu", "local_files_only": True},
+                model_kwargs={
+                    "device": "cpu",
+                    "local_files_only": True,
+                },
                 encode_kwargs={"normalize_embeddings": True},
             )
+
         except Exception as exc:
-            logger.error(
-                "integration_failed request_id=%s integration=huggingface_embeddings error_type=%s duration_ms=%d",
+            logger.exception(
+                "integration_failed request_id=%s integration=huggingface_embeddings "
+                "error_type=%s duration_ms=%d",
                 request_id,
                 type(exc).__name__,
                 round((time.perf_counter() - started) * 1000),
@@ -94,6 +110,7 @@ def get_embeddings(request_id: str = "unknown"):
             request_id,
             round((time.perf_counter() - started) * 1000),
         )
+
         return embeddings
 
     return _embedding_initializer.get(initialize)
@@ -108,53 +125,82 @@ def ensure_index(request_id: str = "unknown"):
         raise RuntimeError("PINECONE_API_KEY is missing")
 
     started = time.perf_counter()
+
     logger.info(
-        "integration_started request_id=%s integration=pinecone_index", request_id)
+        "integration_started request_id=%s integration=pinecone_index",
+        request_id,
+    )
+
     try:
         from pinecone import Pinecone, ServerlessSpec
 
         desired_dimension = get_embedding_dimension()
+
         pc = Pinecone(
             api_key=settings.pinecone_api_key,
             timeout=settings.pinecone_control_timeout_seconds,
         )
-        names = [x["name"] for x in pc.list_indexes()]
+
+        names = [item["name"] for item in pc.list_indexes()]
 
         if settings.pinecone_index_name in names:
             index_info = pc.describe_index(settings.pinecone_index_name)
             current_dimension = getattr(index_info, "dimension", None)
+
             if current_dimension is None and isinstance(index_info, dict):
                 current_dimension = index_info.get("dimension")
 
-            if current_dimension is not None and current_dimension != desired_dimension:
+            if (
+                current_dimension is not None
+                and current_dimension != desired_dimension
+            ):
                 raise RuntimeError(
                     f"Pinecone index has dimension {current_dimension}, "
-                    f"but the selected embedding model requires {desired_dimension}. "
-                    "Configure a new Pinecone index for the local model."
+                    f"but the selected embedding model requires "
+                    f"{desired_dimension}. Configure a compatible Pinecone index."
                 )
 
         if settings.pinecone_index_name not in names:
             logger.info(
-                "pinecone_index_creation_started request_id=%s", request_id)
+                "pinecone_index_creation_started request_id=%s",
+                request_id,
+            )
+
             pc.create_index(
                 name=settings.pinecone_index_name,
                 dimension=desired_dimension,
                 metric="cosine",
-                spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+                spec=ServerlessSpec(
+                    cloud="aws",
+                    region="us-east-1",
+                ),
             )
-            deadline = time.monotonic() + settings.pinecone_index_ready_timeout_seconds
+
+            deadline = (
+                time.monotonic()
+                + settings.pinecone_index_ready_timeout_seconds
+            )
+
             while True:
                 if time.monotonic() >= deadline:
                     raise TimeoutError(
-                        "Pinecone index did not become ready before timeout")
-                if pc.describe_index(settings.pinecone_index_name).status.ready:
+                        "Pinecone index did not become ready before timeout"
+                    )
+
+                index_info = pc.describe_index(settings.pinecone_index_name)
+                status = getattr(index_info, "status", None)
+
+                if status is not None and getattr(status, "ready", False):
                     break
+
                 time.sleep(1)
 
         index = pc.Index(settings.pinecone_index_name)
+
     except Exception as exc:
-        logger.error(
-            "integration_failed request_id=%s integration=pinecone_index error_type=%s duration_ms=%d",
+        logger.exception(
+            "integration_failed request_id=%s integration=pinecone_index "
+            "error_type=%s duration_ms=%d",
             request_id,
             type(exc).__name__,
             round((time.perf_counter() - started) * 1000),
@@ -166,6 +212,7 @@ def ensure_index(request_id: str = "unknown"):
         request_id,
         round((time.perf_counter() - started) * 1000),
     )
+
     return index
 
 
@@ -176,22 +223,28 @@ def get_vectorstore(request_id: str = "unknown"):
         with _vectorstore_lock:
             if _vectorstore is None:
                 started = time.perf_counter()
+
                 logger.info(
                     "integration_started request_id=%s integration=pinecone_vectorstore",
                     request_id,
                 )
+
                 try:
                     from langchain_pinecone import PineconeVectorStore
 
                     index = ensure_index(request_id=request_id)
+                    embeddings = get_embeddings(request_id=request_id)
+
                     _vectorstore = PineconeVectorStore(
                         index=index,
-                        embedding=get_embeddings(request_id=request_id),
+                        embedding=embeddings,
                         namespace=settings.pinecone_namespace,
                     )
+
                 except Exception as exc:
-                    logger.error(
-                        "integration_failed request_id=%s integration=pinecone_vectorstore error_type=%s duration_ms=%d",
+                    logger.exception(
+                        "integration_failed request_id=%s integration=pinecone_vectorstore "
+                        "error_type=%s duration_ms=%d",
                         request_id,
                         type(exc).__name__,
                         round((time.perf_counter() - started) * 1000),
@@ -203,6 +256,7 @@ def get_vectorstore(request_id: str = "unknown"):
                     request_id,
                     round((time.perf_counter() - started) * 1000),
                 )
+
     return _vectorstore
 
 
