@@ -30,12 +30,6 @@ SAFE_FALLBACK = (
     "knowledge base or external search to answer confidently. "
     "Please contact the IT help desk or provide more details."
 )
-LLM_DISABLED_FALLBACK = (
-    "I found relevant company documentation, but answer generation is unavailable. "
-    "Please review the cited source or contact the IT help desk."
-)
-
-
 # --------------------------------------------------
 # 1. Model and search tool initialization
 # --------------------------------------------------
@@ -81,9 +75,27 @@ def llm():
                         timeout=settings.llm_request_timeout_seconds,
                         max_retries=0,
                     )
+                elif provider == "groq":
+                    if not settings.groq_api_key:
+                        raise RuntimeError(
+                            "GROQ_API_KEY is required when LLM_PROVIDER=groq"
+                        )
+                    # Groq exposes an OpenAI-compatible Chat Completions API.
+                    # Reuse the installed client while directing requests to Groq.
+                    from langchain_openai import ChatOpenAI
+
+                    _llm = ChatOpenAI(
+                        model=settings.groq_model,
+                        api_key=settings.groq_api_key,
+                        base_url="https://api.groq.com/openai/v1",
+                        temperature=0,
+                        max_tokens=512,
+                        timeout=settings.llm_request_timeout_seconds,
+                        max_retries=0,
+                    )
                 else:
                     raise RuntimeError(
-                        "LLM_PROVIDER must be 'ollama', 'openai', or 'disabled'"
+                        "LLM_PROVIDER must be 'ollama', 'openai', 'groq', or 'disabled'"
                     )
 
     return _llm
@@ -211,6 +223,40 @@ def unique_citations(documents: list) -> list:
         )
 
     return citations
+
+
+def format_private_kb_excerpt(documents: list) -> str:
+    """Return retrieved company text verbatim when no LLM answer is available."""
+    excerpts = []
+    remaining_chars = 4000
+
+    for document in documents[:2]:
+        content = str(getattr(document, "page_content", "") or "").strip()
+        if not content or remaining_chars <= 0:
+            continue
+
+        metadata = getattr(document, "metadata", {}) or {}
+        source = (
+            metadata.get("source")
+            or metadata.get("file_name")
+            or metadata.get("filename")
+            or "Company knowledge base"
+        )
+        excerpt = content[:remaining_chars]
+        if len(content) > len(excerpt):
+            excerpt = excerpt.rstrip() + " …"
+        excerpts.append(f"Source: {source}\n{excerpt}")
+        remaining_chars -= len(excerpt)
+
+    if not excerpts:
+        return SAFE_FALLBACK
+
+    return (
+        "I couldn't generate a summary, so here are the closest retrieved "
+        "company knowledge-base excerpts. These are source passages, not "
+        "a generated answer:\n\n"
+        + "\n\n---\n\n".join(excerpts)
+    )
 
 
 def format_search_results(result) -> tuple[str, list]:
@@ -401,12 +447,12 @@ def generate_from_kb(state: AgentState) -> dict:
         )
         has_private_sources = bool(documents)
         return {
-            "answer": LLM_DISABLED_FALLBACK if has_private_sources else SAFE_FALLBACK,
-            "source_used": "insufficient_evidence",
+            "answer": format_private_kb_excerpt(documents) if has_private_sources else SAFE_FALLBACK,
+            "source_used": "private_kb" if has_private_sources else "insufficient_evidence",
             "citations": unique_citations(documents) if has_private_sources else [],
             "trace": add_trace(
                 state,
-                "LLM disabled; returned a grounded service limitation",
+                "LLM disabled; returned retrieved company KB excerpts",
             ),
         }
 
@@ -466,8 +512,9 @@ Answer:
     try:
         started = time.perf_counter()
         logger.info(
-            "workflow_stage_started request_id=%s stage=ollama_private_answer",
+            "workflow_stage_started request_id=%s stage=llm_private_answer provider=%s",
             request_id,
+            settings.llm_provider.strip().lower(),
         )
         answer = extract_answer(llm().invoke(prompt))
 
@@ -481,7 +528,7 @@ Answer:
 
         if not answer or contains_insufficient_marker(answer):
             logger.info(
-                "workflow_stage_completed request_id=%s stage=ollama_private_answer outcome=insufficient duration_ms=%d",
+                "workflow_stage_completed request_id=%s stage=llm_private_answer outcome=insufficient duration_ms=%d",
                 request_id,
                 round((time.perf_counter() - started) * 1000),
             )
@@ -495,7 +542,7 @@ Answer:
             }
 
         logger.info(
-            "workflow_stage_completed request_id=%s stage=ollama_private_answer outcome=answered duration_ms=%d",
+            "workflow_stage_completed request_id=%s stage=llm_private_answer outcome=answered duration_ms=%d",
             request_id,
             round((time.perf_counter() - started) * 1000),
         )
@@ -511,11 +558,27 @@ Answer:
 
     except Exception as exc:
         logger.error(
-            "workflow_stage_failed request_id=%s stage=ollama_private_answer error_type=%s duration_ms=%d",
+            "workflow_stage_failed request_id=%s stage=llm_private_answer provider=%s error_type=%s duration_ms=%d",
             request_id,
+            settings.llm_provider.strip().lower(),
             type(exc).__name__,
             round((time.perf_counter() - started) * 1000),
         )
+        if documents:
+            logger.info(
+                "workflow_stage_completed request_id=%s stage=private_kb_excerpt_fallback chunks=%d",
+                request_id,
+                len(documents),
+            )
+            return {
+                "answer": format_private_kb_excerpt(documents),
+                "source_used": "private_kb",
+                "citations": unique_citations(documents),
+                "trace": add_trace(
+                    state,
+                    "LLM unavailable; returned retrieved company KB excerpts",
+                ),
+            }
         return {
             "answer": "",
             "citations": [],
@@ -625,7 +688,7 @@ def generate_from_web(state: AgentState) -> dict:
 
     if state.get("model_failed"):
         logger.info(
-            "workflow_stage_skipped request_id=%s stage=ollama_web_answer reason=previous_model_failure",
+            "workflow_stage_skipped request_id=%s stage=llm_web_answer reason=previous_model_failure",
             request_id,
         )
         return {
@@ -640,7 +703,7 @@ def generate_from_web(state: AgentState) -> dict:
 
     if not evidence:
         logger.info(
-            "workflow_stage_skipped request_id=%s stage=ollama_web_answer reason=no_evidence",
+            "workflow_stage_skipped request_id=%s stage=llm_web_answer reason=no_evidence",
             request_id,
         )
         return {
@@ -683,8 +746,9 @@ Answer:
     try:
         started = time.perf_counter()
         logger.info(
-            "workflow_stage_started request_id=%s stage=ollama_web_answer",
+            "workflow_stage_started request_id=%s stage=llm_web_answer provider=%s",
             request_id,
+            settings.llm_provider.strip().lower(),
         )
         answer = extract_answer(llm().invoke(prompt))
 
@@ -698,7 +762,7 @@ Answer:
         # CRITICAL: Never expose the internal marker to the user.
         if not answer or contains_insufficient_marker(answer):
             logger.info(
-                "workflow_stage_completed request_id=%s stage=ollama_web_answer outcome=insufficient duration_ms=%d",
+                "workflow_stage_completed request_id=%s stage=llm_web_answer outcome=insufficient duration_ms=%d",
                 request_id,
                 round((time.perf_counter() - started) * 1000),
             )
@@ -713,7 +777,7 @@ Answer:
             }
 
         logger.info(
-            "workflow_stage_completed request_id=%s stage=ollama_web_answer outcome=answered duration_ms=%d",
+            "workflow_stage_completed request_id=%s stage=llm_web_answer outcome=answered duration_ms=%d",
             request_id,
             round((time.perf_counter() - started) * 1000),
         )
@@ -729,8 +793,9 @@ Answer:
 
     except Exception as exc:
         logger.error(
-            "workflow_stage_failed request_id=%s stage=ollama_web_answer error_type=%s duration_ms=%d",
+            "workflow_stage_failed request_id=%s stage=llm_web_answer provider=%s error_type=%s duration_ms=%d",
             request_id,
+            settings.llm_provider.strip().lower(),
             type(exc).__name__,
             round((time.perf_counter() - started) * 1000),
         )

@@ -188,6 +188,10 @@ APP_ENV=development
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=qwen3:8b
+# For Render, use the hosted Groq endpoint instead:
+# LLM_PROVIDER=groq
+# GROQ_API_KEY=your_groq_api_key
+# GROQ_MODEL=openai/gpt-oss-20b
 LLM_REQUEST_TIMEOUT_SECONDS=35
 TAVILY_REQUEST_TIMEOUT_SECONDS=10
 PINECONE_CONTROL_TIMEOUT_SECONDS=8
@@ -198,7 +202,7 @@ Do not add real credentials to this README or commit them to version control. If
 If you choose OpenAI for Render answer generation, configure `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPENAI_MODEL` in the service environment, and choose a model available to your account. OpenAI API usage may incur charges; check current pricing before enabling it. Keep `OLLAMA_BASE_URL` for local development, or set it to a separately hosted, reachable Ollama service if you intend to use Ollama in production. Never paste credentials into chat or commit them.
 For a Render Docker service, the Dockerfile downloads the ONNX model during image build into `/opt/models/fastembed` and runs with `EMBEDDING_LOCAL_FILES_ONLY=true`. The model files are included in the built image, not committed to the repository. If the public model download needs Hub authentication, provide a Render build secret file named `hf_token`; the Docker build mounts it only for the download step. `.dockerignore` excludes token files from the build context. `HF_TOKEN` is optional and is never printed by the downloader. A native Render service that does not build this Dockerfile must run `python scripts/download_embedding_model.py` during its build and configure `EMBEDDING_MODEL_PATH` to the cache directory that was produced.
 
-The current default `LLM_PROVIDER=ollama` is for local development. A Render service cannot reach Ollama at `http://localhost:11434` on your computer. To avoid a failing remote-model call without using a paid API, set `LLM_PROVIDER=disabled`: greetings and private-KB retrieval remain available, and retrieved citations are returned with a clear message that answer generation is disabled. For synthesized answers in production, configure an LLM endpoint that the Render service can reach; API usage may incur charges. Do not point the deployed service at a local-only Ollama URL.
+The current default `LLM_PROVIDER=ollama` is for local development. A Render service cannot reach Ollama at `http://localhost:11434` on your computer. For a hosted demo, configure `LLM_PROVIDER=groq`, `GROQ_API_KEY`, and `GROQ_MODEL=openai/gpt-oss-20b` in Render. This project sends chat requests to Groq's OpenAI-compatible endpoint; Groq's free plan has usage limits and may reject requests after those limits are reached. When the model is disabled or unavailable, the app returns the closest retrieved private-KB excerpts with citations rather than inventing an answer. This fallback needs no LLM API call, but it displays source passages instead of a synthesized response. Keep `OPENAI_API_KEY` unset if you do not intend to use OpenAI, and never paste credentials into chat or commit them. Do not point the deployed service at a local-only Ollama URL.
 
 Before deploying, make sure Render's `PINECONE_INDEX_NAME` and `PINECONE_NAMESPACE` exactly match the existing index and namespace containing your vectors. This application checks the index dimension as 384; do not ingest into or create another index as part of deployment troubleshooting.
 
