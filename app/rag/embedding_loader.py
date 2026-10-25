@@ -42,6 +42,12 @@ class FastEmbedAdapter:
         local_files_only: bool,
         model_factory: Callable | None = None,
     ):
+        if local_files_only:
+            # FastEmbed also receives local_files_only below. Set the Hub-wide
+            # guard before importing it so no Hub metadata requests slip
+            # through during a production cache-only load.
+            os.environ["HF_HUB_OFFLINE"] = "1"
+
         if model_factory is None:
             from fastembed import TextEmbedding
 

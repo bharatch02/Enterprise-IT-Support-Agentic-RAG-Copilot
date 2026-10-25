@@ -113,7 +113,7 @@ def ensure_index(request_id: str = "unknown"):
     )
 
     try:
-        from pinecone import Pinecone, ServerlessSpec
+        from pinecone import Pinecone
 
         desired_dimension = get_embedding_dimension()
 
@@ -142,39 +142,11 @@ def ensure_index(request_id: str = "unknown"):
                 )
 
         if settings.pinecone_index_name not in names:
-            logger.info(
-                "pinecone_index_creation_started request_id=%s",
-                request_id,
+            raise RuntimeError(
+                f"Configured Pinecone index '{settings.pinecone_index_name}' was not found. "
+                "Check PINECONE_INDEX_NAME and confirm it names the index containing your vectors. "
+                "The application will not create an index automatically."
             )
-
-            pc.create_index(
-                name=settings.pinecone_index_name,
-                dimension=desired_dimension,
-                metric="cosine",
-                spec=ServerlessSpec(
-                    cloud="aws",
-                    region="us-east-1",
-                ),
-            )
-
-            deadline = (
-                time.monotonic()
-                + settings.pinecone_index_ready_timeout_seconds
-            )
-
-            while True:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        "Pinecone index did not become ready before timeout"
-                    )
-
-                index_info = pc.describe_index(settings.pinecone_index_name)
-                status = getattr(index_info, "status", None)
-
-                if status is not None and getattr(status, "ready", False):
-                    break
-
-                time.sleep(1)
 
         index = pc.Index(settings.pinecone_index_name)
 

@@ -35,7 +35,6 @@ class Settings(BaseSettings):
     embedding_local_files_only: bool = True
     pinecone_control_timeout_seconds: float = 8.0
     pinecone_query_timeout_seconds: float = 15.0
-    pinecone_index_ready_timeout_seconds: float = 60.0
 
     top_k: int = 4
     max_retries: int = 1
